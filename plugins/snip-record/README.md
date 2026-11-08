@@ -4,6 +4,25 @@ A Snipping Tool-style screen recorder that lives inside OBS. Press a
 hotkey, pick a region, a window, or a full display, press Enter — OBS is
 recording. Press the hotkey again to stop.
 
+## "OBS for Dummies" simple mode
+
+On launch, a small **OBS for Dummies** window replaces the main OBS
+window (OBS itself keeps running in the tray): **Start Snipping**,
+**Open Recording Folder**, and **Show Full OBS Interface** — the full
+UI is always one click away. The window also has the snip shortcut
+field (default `Alt+Shift+S`), a "tray icon click stops recording"
+toggle, and a "show this window at startup" toggle.
+
+First-launch defaults (only values never set by the user): tray icon
+enabled, start minimized to tray, minimize to tray instead of the
+taskbar, tray click stops recording, recordings as MP4 into the
+system Videos folder. All of these remain changeable in OBS Settings.
+
+The picker also has **Desktop audio**, **Microphone**, and **Mouse
+pointer** checkboxes. Unchecking audio detaches OBS's global audio
+devices (desktop channels 1-2, mic channels 3-6) for that snip only;
+they are restored when the recording stops.
+
 ## Usage
 
 1. Bind the hotkey: **Settings → Hotkeys → "Snip Record: open picker /

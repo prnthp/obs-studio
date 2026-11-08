@@ -40,6 +40,13 @@ public:
 	void SetInstantStartChecked(bool checked);
 	void SetPostAction(int action);
 
+	// What goes into the recording: desktop audio (channels 1-2),
+	// microphone (channels 3-6) and the mouse pointer.
+	bool DesktopAudio() const;
+	bool MicAudio() const;
+	bool CaptureCursor() const;
+	void SetCaptureOptions(bool desktopAudio, bool micAudio, bool cursor);
+
 protected:
 	void showEvent(QShowEvent *event) override;
 	void hideEvent(QHideEvent *event) override;
@@ -72,6 +79,9 @@ private:
 	QPushButton *recordButton = nullptr;
 	QCheckBox *matchCanvasCheck = nullptr;
 	QCheckBox *instantStartCheck = nullptr;
+	QCheckBox *desktopAudioCheck = nullptr;
+	QCheckBox *micAudioCheck = nullptr;
+	QCheckBox *cursorCheck = nullptr;
 	QComboBox *postActionCombo = nullptr;
 	QLabel *hintLabel = nullptr;
 	SnipOutline *outline = nullptr;

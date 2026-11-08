@@ -8,6 +8,9 @@ add_library(OBS::snip-record ALIAS snip-record)
 target_sources(
   snip-record
   PRIVATE snip-record.cpp
+          snip-launcher.cpp
+          snip-launcher.hpp
+          snip-hotkey.hpp
           snip-picker.cpp
           snip-picker.hpp
           snip-outline.cpp

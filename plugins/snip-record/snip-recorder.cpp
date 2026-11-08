@@ -109,7 +109,7 @@ obs_source_t *SnipRecorder::CreateCaptureSource(const SnipSelection &selection)
 		obs_data_set_int(settings, "method", 2); // METHOD_WGC
 		obs_data_set_string(settings, "window", selection.windowValue.c_str());
 		obs_data_set_int(settings, "priority", 0); // match by class first; title/exe still recorded
-		obs_data_set_bool(settings, "cursor", true);
+		obs_data_set_bool(settings, "cursor", captureCursor);
 		// Explicit false: the source default is client-area only,
 		// which drops the title bar. Capture the whole window.
 		obs_data_set_bool(settings, "client_area", false);
@@ -118,7 +118,7 @@ obs_source_t *SnipRecorder::CreateCaptureSource(const SnipSelection &selection)
 	case SnipSelection::Mode::FullScreen:
 		sourceId = "monitor_capture";
 		obs_data_set_string(settings, "monitor_id", selection.monitorId.c_str());
-		obs_data_set_bool(settings, "capture_cursor", true);
+		obs_data_set_bool(settings, "capture_cursor", captureCursor);
 		break;
 	}
 
@@ -307,6 +307,7 @@ bool SnipRecorder::StartRecording(const SnipSelection &selection)
 	FitItemToCanvas(item);
 
 	obs_frontend_set_current_scene(sceneSource);
+	GateAudioChannels();
 	active = true;
 	blog(LOG_INFO, "[snip-record] Starting recording (mode=%d, %dx%d)", int(selection.mode), selection.rect.width,
 	     selection.rect.height);
@@ -384,9 +385,55 @@ void SnipRecorder::CancelPendingStart()
 	}
 }
 
+void SnipRecorder::GateAudioChannels()
+{
+	// Frontend audio layout: channels 1-2 are Desktop Audio 1/2,
+	// channels 3-6 are Mic/Aux 1-4. Detach the unchecked families
+	// for this snip; RestoreAudioChannels puts them back.
+	auto gate = [this](int channel) {
+		obs_source_t *source = obs_get_output_source(channel); // new ref
+		if (!source) {
+			return;
+		}
+		gatedAudio.emplace_back(channel, source);
+		obs_set_output_source(channel, nullptr);
+	};
+
+	if (!recordDesktopAudio) {
+		gate(1);
+		gate(2);
+	}
+	if (!recordMicAudio) {
+		for (int channel = 3; channel <= 6; channel++) {
+			gate(channel);
+		}
+	}
+	if (!gatedAudio.empty()) {
+		blog(LOG_INFO, "[snip-record] Detached %zu global audio source(s) for this snip", gatedAudio.size());
+	}
+}
+
+void SnipRecorder::RestoreAudioChannels()
+{
+	for (const auto &[channel, source] : gatedAudio) {
+		// Only restore into a still-empty channel: if the user
+		// reconfigured audio devices mid-recording, their new
+		// source wins and our saved one is just released.
+		obs_source_t *current = obs_get_output_source(channel);
+		if (!current) {
+			obs_set_output_source(channel, source);
+		} else {
+			obs_source_release(current);
+		}
+		obs_source_release(source);
+	}
+	gatedAudio.clear();
+}
+
 void SnipRecorder::HandleRecordingStopped()
 {
 	CancelPendingStart();
+	RestoreAudioChannels();
 	if (!active) {
 		RestoreCanvasIfPending();
 		return;

@@ -3,6 +3,8 @@
 #include <obs.hpp>
 
 #include <atomic>
+#include <utility>
+#include <vector>
 
 #include "snip-selection.hpp"
 
@@ -49,6 +51,16 @@ public:
 	bool MatchCanvas() const { return matchCanvas; }
 	bool MatchCanvasUserSet() const { return matchCanvasUserSet; }
 
+	// What the next snip captures, from the picker checkboxes.
+	// Desktop audio and mic are the frontend's global audio channels
+	// (1-2 and 3-6); unchecking removes them for the snip only.
+	void SetRecordDesktopAudio(bool record) { recordDesktopAudio = record; }
+	void SetRecordMicAudio(bool record) { recordMicAudio = record; }
+	void SetCaptureCursor(bool capture) { captureCursor = capture; }
+	bool RecordDesktopAudio() const { return recordDesktopAudio; }
+	bool RecordMicAudio() const { return recordMicAudio; }
+	bool CaptureCursor() const { return captureCursor; }
+
 	// Restores the pre-snip canvas size if one is pending (after the
 	// recording stopped, or at startup after a crash mid-snip).
 	void RestoreCanvasIfPending();
@@ -59,6 +71,15 @@ private:
 	bool MaybeResizeCanvas(int width, int height);
 	void DeferStartUntilHooked(obs_source_t *capture);
 	void DisconnectPendingHook();
+	void GateAudioChannels();
+	void RestoreAudioChannels();
+
+	bool recordDesktopAudio = true;
+	bool recordMicAudio = true;
+	bool captureCursor = true;
+	// Global audio sources detached for the running snip, restored
+	// when it stops. Strong refs, released on restore.
+	std::vector<std::pair<int, obs_source_t *>> gatedAudio;
 
 	bool active = false;
 	std::atomic<bool> pendingStart{false};

@@ -92,6 +92,13 @@ void OBSBasic::IconActivated(QSystemTrayIcon::ActivationReason reason)
 	UNUSED_PARAMETER(reason);
 #else
 	if (reason == QSystemTrayIcon::Trigger) {
+		// Simple-recorder mode: a tray click stops the running
+		// recording instead of toggling the main window.
+		if (RecordingActive() &&
+		    config_get_bool(App()->GetUserConfig(), "BasicWindow", "TrayClickStopsRecording")) {
+			StopRecording();
+			return;
+		}
 		EnablePreviewDisplay(previewEnabled && !isVisible());
 		ToggleShowHide();
 	}

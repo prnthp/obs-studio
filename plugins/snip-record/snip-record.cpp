@@ -9,6 +9,7 @@
 #include <QFileInfo>
 #include <QMainWindow>
 #include <QObject>
+#include <QStandardPaths>
 #include <QTimer>
 
 #include <algorithm>
@@ -23,6 +24,8 @@
 #include <shellapi.h>
 #endif
 
+#include "snip-hotkey.hpp"
+#include "snip-launcher.hpp"
 #include "snip-picker.hpp"
 #include "snip-recorder.hpp"
 
@@ -33,6 +36,7 @@ namespace {
 
 SnipRecorder recorder;
 SnipPicker *picker = nullptr;
+SnipLauncher *launcher = nullptr;
 obs_hotkey_id toggleHotkey = OBS_INVALID_HOTKEY_ID;
 
 const char *kHotkeyName = "snip_record.toggle";
@@ -54,7 +58,16 @@ void LoadHotkeyBinding()
 
 	const char *json = config_get_string(config, "Hotkeys", kHotkeyName);
 	if (!json || !json[0]) {
-		return;
+		// Fresh install: default to Alt+Shift+S so the snip flow
+		// works out of the box. Persisted like any user binding,
+		// so Settings > Hotkeys shows (and can change) it too.
+		config_set_string(config, "Hotkeys", kHotkeyName, snip::DefaultBindingJson());
+		config_save(config);
+		json = config_get_string(config, "Hotkeys", kHotkeyName);
+		blog(LOG_INFO, "[snip-record] No saved shortcut; defaulting to Alt+Shift+S");
+		if (!json || !json[0]) {
+			return;
+		}
 	}
 
 	OBSDataAutoRelease data = obs_data_create_from_json(json);
@@ -66,6 +79,100 @@ void LoadHotkeyBinding()
 	obs_hotkey_load(toggleHotkey, bindings);
 	blog(LOG_INFO, "[snip-record] Loaded %zu hotkey binding(s) from profile",
 	     bindings ? size_t(obs_data_array_count(bindings)) : size_t(0));
+}
+
+// First binding of the toggle hotkey as display text ("Alt+Shift+S").
+std::string CurrentShortcutDisplay()
+{
+	config_t *config = obs_frontend_get_profile_config();
+	const char *json = config ? config_get_string(config, "Hotkeys", kHotkeyName) : nullptr;
+	if (!json || !json[0]) {
+		return "Alt+Shift+S";
+	}
+	OBSDataAutoRelease data = obs_data_create_from_json(json);
+	OBSDataArrayAutoRelease bindings = data ? obs_data_get_array(data, "bindings") : nullptr;
+	if (!bindings || obs_data_array_count(bindings) == 0) {
+		return {};
+	}
+	OBSDataAutoRelease binding = obs_data_array_item(bindings, 0);
+	QStringList parts;
+	if (obs_data_get_bool(binding, "control")) {
+		parts << "Ctrl";
+	}
+	if (obs_data_get_bool(binding, "alt")) {
+		parts << "Alt";
+	}
+	if (obs_data_get_bool(binding, "shift")) {
+		parts << "Shift";
+	}
+	if (obs_data_get_bool(binding, "meta")) {
+		parts << "Meta";
+	}
+	QString key = QString::fromUtf8(obs_data_get_string(binding, "key"));
+	key.remove("OBS_KEY_");
+	if (key == "SPACE") {
+		key = "Space";
+	} else if (key.size() > 1) {
+		key = key.left(1) + key.mid(1).toLower();
+	}
+	parts << key;
+	return parts.join('+').toStdString();
+}
+
+void ApplyHotkeyJson(const std::string &json)
+{
+	if (toggleHotkey == OBS_INVALID_HOTKEY_ID) {
+		return;
+	}
+	config_t *config = obs_frontend_get_profile_config();
+	if (config) {
+		config_set_string(config, "Hotkeys", kHotkeyName, json.c_str());
+		config_save(config);
+	}
+	OBSDataAutoRelease data = obs_data_create_from_json(json.c_str());
+	OBSDataArrayAutoRelease bindings = data ? obs_data_get_array(data, "bindings") : nullptr;
+	obs_hotkey_load(toggleHotkey, bindings);
+}
+
+// Installation defaults for the simple recorder: live in the tray,
+// record to MP4 in the Videos folder. Only fills values the user has
+// never set, so later changes in OBS Settings always win.
+void SetGlobalDefaultBool(const char *key, bool value)
+{
+	config_t *config = obs_frontend_get_user_config();
+	if (config && !config_has_user_value(config, "BasicWindow", key)) {
+		config_set_bool(config, "BasicWindow", key, value);
+		config_save(config);
+	}
+}
+
+void ApplyInstallDefaults()
+{
+	SetGlobalDefaultBool("SysTrayEnabled", true);
+	SetGlobalDefaultBool("SysTrayWhenStarted", true);
+	SetGlobalDefaultBool("SysTrayMinimizeToTray", true);
+	SetGlobalDefaultBool("TrayClickStopsRecording", true);
+
+	config_t *profile = obs_frontend_get_profile_config();
+	if (!profile) {
+		return;
+	}
+	bool changed = false;
+	if (!config_has_user_value(profile, "SimpleOutput", "RecFormat2")) {
+		config_set_string(profile, "SimpleOutput", "RecFormat2", "mp4");
+		changed = true;
+	}
+	if (!config_has_user_value(profile, "SimpleOutput", "FilePath")) {
+		const QString movies = QStandardPaths::writableLocation(QStandardPaths::MoviesLocation);
+		if (!movies.isEmpty()) {
+			config_set_string(profile, "SimpleOutput", "FilePath",
+					  QDir::toNativeSeparators(movies).toUtf8().constData());
+			changed = true;
+		}
+	}
+	if (changed) {
+		config_save(profile);
+	}
 }
 
 // The hotkey fires the picker when idle, and stops the recording when a
@@ -216,9 +323,18 @@ void FrontendEvent(enum obs_frontend_event event, void *)
 			QTimer::singleShot(500, QCoreApplication::instance(), [] { DoPostRecordingAction(); });
 		}
 	} else if (event == OBS_FRONTEND_EVENT_FINISHED_LOADING || event == OBS_FRONTEND_EVENT_PROFILE_CHANGED) {
+		ApplyInstallDefaults();
 		LoadHotkeyBinding();
 		// Undo a canvas resize left behind by a crash mid-snip.
 		recorder.RestoreCanvasIfPending();
+		if (event == OBS_FRONTEND_EVENT_FINISHED_LOADING && launcher && launcher->ShowAtStartup()) {
+			// Simple mode: the launcher replaces the main
+			// window until the user asks for the full UI.
+			if (QWidget *mainWindow = static_cast<QWidget *>(obs_frontend_get_main_window())) {
+				mainWindow->hide();
+			}
+			launcher->Show();
+		}
 	}
 }
 
@@ -230,6 +346,9 @@ void SaveSettings(obs_data_t *save_data, bool saving, void *)
 		obs_data_set_bool(obj, "matchCanvasUserSet", recorder.MatchCanvasUserSet());
 		obs_data_set_bool(obj, "instantStart", picker ? picker->InstantStart() : false);
 		obs_data_set_int(obj, "postAction", picker ? picker->PostAction() : 0);
+		obs_data_set_bool(obj, "desktopAudio", picker ? picker->DesktopAudio() : true);
+		obs_data_set_bool(obj, "micAudio", picker ? picker->MicAudio() : true);
+		obs_data_set_bool(obj, "captureCursor", picker ? picker->CaptureCursor() : true);
 		obs_data_set_obj(save_data, "snip-record", obj);
 	} else {
 		OBSDataAutoRelease obj = obs_data_get_obj(save_data, "snip-record");
@@ -245,6 +364,14 @@ void SaveSettings(obs_data_t *save_data, bool saving, void *)
 			if (obj) {
 				picker->SetInstantStartChecked(obs_data_get_bool(obj, "instantStart"));
 				picker->SetPostAction(int(obs_data_get_int(obj, "postAction")));
+				// New in this version; absent keys mean the
+				// defaults (everything recorded).
+				auto savedOr = [&obj](const char *key, bool fallback) {
+					return obs_data_has_user_value(obj, key) ? obs_data_get_bool(obj, key)
+										 : fallback;
+				};
+				picker->SetCaptureOptions(savedOr("desktopAudio", true), savedOr("micAudio", true),
+							  savedOr("captureCursor", true));
 			}
 		}
 	}
@@ -257,12 +384,29 @@ bool obs_module_load(void)
 	obs_frontend_push_ui_translation(obs_module_get_string);
 	QMainWindow *mainWindow = static_cast<QMainWindow *>(obs_frontend_get_main_window());
 	picker = new SnipPicker(&recorder, mainWindow);
+	launcher = new SnipLauncher([] { TogglePickerOrStop(); }, ApplyHotkeyJson, CurrentShortcutDisplay, mainWindow);
+
+	// Set installation defaults before the frontend reads the tray
+	// options while creating the main window.
+	ApplyInstallDefaults();
 
 	QAction *action =
 		static_cast<QAction *>(obs_frontend_add_tools_menu_qaction(obs_module_text("SnipRecord.Menu.Open")));
+	QAction *dummiesAction =
+		static_cast<QAction *>(obs_frontend_add_tools_menu_qaction(obs_module_text("SnipRecord.Menu.Dummies")));
 	obs_frontend_pop_ui_translation();
 
 	QObject::connect(action, &QAction::triggered, action, [] { TogglePickerOrStop(); });
+	QObject::connect(dummiesAction, &QAction::triggered, dummiesAction, [] {
+		// Back to simple mode: show the launcher, tuck the
+		// full UI away again.
+		if (QWidget *mainWindow = static_cast<QWidget *>(obs_frontend_get_main_window())) {
+			mainWindow->hide();
+		}
+		if (launcher) {
+			launcher->Show();
+		}
+	});
 
 	toggleHotkey = obs_hotkey_register_frontend(kHotkeyName, obs_module_text("SnipRecord.Hotkey.Toggle"),
 						    HotkeyPressed, nullptr);
@@ -281,6 +425,8 @@ void obs_module_unload(void)
 	if (toggleHotkey != OBS_INVALID_HOTKEY_ID) {
 		obs_hotkey_unregister(toggleHotkey);
 	}
+	delete launcher;
+	launcher = nullptr;
 	delete picker;
 	picker = nullptr;
 }

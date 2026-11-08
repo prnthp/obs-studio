@@ -265,6 +265,17 @@ SnipPicker::SnipPicker(SnipRecorder *recorder_, QWidget *parent) : QWidget(paren
 	instantStartCheck->setFocusPolicy(Qt::NoFocus);
 	instantStartCheck->setStyleSheet("QCheckBox { color: #ddd; padding: 2px 6px; }");
 
+	auto makeOptionCheck = [this](const char *textKey) {
+		auto *check = new QCheckBox(obs_module_text(textKey), toolbar);
+		check->setChecked(true);
+		check->setFocusPolicy(Qt::NoFocus);
+		check->setStyleSheet("QCheckBox { color: #ddd; padding: 2px 6px; }");
+		return check;
+	};
+	desktopAudioCheck = makeOptionCheck("SnipRecord.Picker.DesktopAudio");
+	micAudioCheck = makeOptionCheck("SnipRecord.Picker.MicAudio");
+	cursorCheck = makeOptionCheck("SnipRecord.Picker.Cursor");
+
 	auto *postActionLabel = new QLabel(obs_module_text("SnipRecord.Picker.AfterRecording"), toolbar);
 	postActionLabel->setStyleSheet("color: #ddd; padding: 2px 6px;");
 	postActionCombo = new QComboBox(toolbar);
@@ -292,6 +303,13 @@ SnipPicker::SnipPicker(SnipRecorder *recorder_, QWidget *parent) : QWidget(paren
 	optionsRow->addWidget(instantStartCheck);
 	optionsRow->addStretch();
 
+	auto *captureRow = new QHBoxLayout;
+	captureRow->setContentsMargins(6, 0, 6, 0);
+	captureRow->addWidget(desktopAudioCheck);
+	captureRow->addWidget(micAudioCheck);
+	captureRow->addWidget(cursorCheck);
+	captureRow->addStretch();
+
 	auto *postActionRow = new QHBoxLayout;
 	postActionRow->setContentsMargins(6, 0, 6, 0);
 	postActionRow->addWidget(postActionLabel);
@@ -302,6 +320,7 @@ SnipPicker::SnipPicker(SnipRecorder *recorder_, QWidget *parent) : QWidget(paren
 	toolbarLayout->setContentsMargins(0, 0, 0, 6);
 	toolbarLayout->addLayout(buttonsRow);
 	toolbarLayout->addLayout(optionsRow);
+	toolbarLayout->addLayout(captureRow);
 	toolbarLayout->addLayout(postActionRow);
 	toolbarLayout->addWidget(hintLabel);
 
@@ -315,6 +334,18 @@ SnipPicker::SnipPicker(SnipRecorder *recorder_, QWidget *parent) : QWidget(paren
 		obs_frontend_save(); // persist via the module's save callback
 	});
 	connect(instantStartCheck, &QCheckBox::toggled, this, [](bool) { obs_frontend_save(); });
+	connect(desktopAudioCheck, &QCheckBox::toggled, this, [this](bool checked) {
+		recorder->SetRecordDesktopAudio(checked);
+		obs_frontend_save();
+	});
+	connect(micAudioCheck, &QCheckBox::toggled, this, [this](bool checked) {
+		recorder->SetRecordMicAudio(checked);
+		obs_frontend_save();
+	});
+	connect(cursorCheck, &QCheckBox::toggled, this, [this](bool checked) {
+		recorder->SetCaptureCursor(checked);
+		obs_frontend_save();
+	});
 	connect(postActionCombo, &QComboBox::currentIndexChanged, this, [](int) { obs_frontend_save(); });
 
 	outline = new SnipOutline();
@@ -349,6 +380,40 @@ void SnipPicker::SetPostAction(int action)
 {
 	const QSignalBlocker blocker(postActionCombo);
 	postActionCombo->setCurrentIndex(std::clamp(action, 0, postActionCombo->count() - 1));
+}
+
+bool SnipPicker::DesktopAudio() const
+{
+	return desktopAudioCheck->isChecked();
+}
+
+bool SnipPicker::MicAudio() const
+{
+	return micAudioCheck->isChecked();
+}
+
+bool SnipPicker::CaptureCursor() const
+{
+	return cursorCheck->isChecked();
+}
+
+void SnipPicker::SetCaptureOptions(bool desktopAudio, bool micAudio, bool cursor)
+{
+	{
+		const QSignalBlocker blocker(desktopAudioCheck);
+		desktopAudioCheck->setChecked(desktopAudio);
+	}
+	{
+		const QSignalBlocker blocker(micAudioCheck);
+		micAudioCheck->setChecked(micAudio);
+	}
+	{
+		const QSignalBlocker blocker(cursorCheck);
+		cursorCheck->setChecked(cursor);
+	}
+	recorder->SetRecordDesktopAudio(desktopAudio);
+	recorder->SetRecordMicAudio(micAudio);
+	recorder->SetCaptureCursor(cursor);
 }
 
 void SnipPicker::MaybeInstantStart()

@@ -64,6 +64,10 @@ void FitItemToCanvas(obs_sceneitem_t *item)
 
 	vec2 bounds = {float(videoInfo.base_width), float(videoInfo.base_height)};
 	vec2 center = {bounds.x / 2.0f, bounds.y / 2.0f};
+	// Scene items anchor their top-left corner at `pos` by default;
+	// without this, putting `pos` at the canvas center pushes the item
+	// into the lower-right quadrant.
+	obs_sceneitem_set_alignment(item, OBS_ALIGN_CENTER);
 	obs_sceneitem_set_bounds_type(item, OBS_BOUNDS_SCALE_INNER);
 	obs_sceneitem_set_bounds_alignment(item, OBS_ALIGN_CENTER);
 	obs_sceneitem_set_bounds_crop(item, false);

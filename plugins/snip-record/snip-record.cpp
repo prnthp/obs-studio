@@ -1,5 +1,7 @@
 #include <obs-frontend-api.h>
 #include <obs-module.h>
+#include <obs.hpp>
+#include <util/config-file.h>
 
 #include <QAction>
 #include <QCoreApplication>
@@ -18,6 +20,39 @@ namespace {
 SnipRecorder recorder;
 SnipPicker *picker = nullptr;
 obs_hotkey_id toggleHotkey = OBS_INVALID_HOTKEY_ID;
+
+const char *kHotkeyName = "snip_record.toggle";
+
+// The Settings dialog saves frontend hotkey bindings to the profile
+// config ("Hotkeys" section), but OBS only loads back its own built-in
+// hotkeys at startup. Load ours explicitly, or the binding set in
+// Settings silently stops working after a restart.
+void LoadHotkeyBinding()
+{
+	if (toggleHotkey == OBS_INVALID_HOTKEY_ID) {
+		return;
+	}
+
+	config_t *config = obs_frontend_get_profile_config();
+	if (!config) {
+		return;
+	}
+
+	const char *json = config_get_string(config, "Hotkeys", kHotkeyName);
+	if (!json || !json[0]) {
+		return;
+	}
+
+	OBSDataAutoRelease data = obs_data_create_from_json(json);
+	if (!data) {
+		return;
+	}
+
+	OBSDataArrayAutoRelease bindings = obs_data_get_array(data, "bindings");
+	obs_hotkey_load(toggleHotkey, bindings);
+	blog(LOG_INFO, "[snip-record] Loaded %zu hotkey binding(s) from profile",
+	     bindings ? size_t(obs_data_array_count(bindings)) : size_t(0));
+}
 
 // The hotkey fires the picker when idle, and stops the recording when a
 // snip recording is running -- one shortcut for the whole flow.
@@ -50,6 +85,8 @@ void FrontendEvent(enum obs_frontend_event event, void *)
 {
 	if (event == OBS_FRONTEND_EVENT_RECORDING_STOPPED) {
 		recorder.HandleRecordingStopped();
+	} else if (event == OBS_FRONTEND_EVENT_FINISHED_LOADING || event == OBS_FRONTEND_EVENT_PROFILE_CHANGED) {
+		LoadHotkeyBinding();
 	}
 }
 
@@ -67,7 +104,7 @@ bool obs_module_load(void)
 
 	QObject::connect(action, &QAction::triggered, action, [] { TogglePickerOrStop(); });
 
-	toggleHotkey = obs_hotkey_register_frontend("snip_record.toggle", obs_module_text("SnipRecord.Hotkey.Toggle"),
+	toggleHotkey = obs_hotkey_register_frontend(kHotkeyName, obs_module_text("SnipRecord.Hotkey.Toggle"),
 						    HotkeyPressed, nullptr);
 	obs_frontend_add_event_callback(FrontendEvent, nullptr);
 

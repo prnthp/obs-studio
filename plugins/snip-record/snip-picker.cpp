@@ -278,6 +278,22 @@ void SnipPicker::OpenPicker()
 	setFocus(Qt::ActiveWindowFocusReason);
 }
 
+// The picker is a topmost tool window and may not hold keyboard focus
+// (e.g. when invoked while another app is focused), which silently
+// swallows the 1/2/3/Enter/Esc keys. Grab the keyboard for the short
+// time the overlay is up so mode switching always works.
+void SnipPicker::showEvent(QShowEvent *event)
+{
+	QWidget::showEvent(event);
+	grabKeyboard();
+}
+
+void SnipPicker::hideEvent(QHideEvent *event)
+{
+	releaseKeyboard();
+	QWidget::hideEvent(event);
+}
+
 void SnipPicker::SetMode(SnipSelection::Mode newMode)
 {
 	mode = newMode;

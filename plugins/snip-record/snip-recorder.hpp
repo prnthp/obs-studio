@@ -2,6 +2,8 @@
 
 #include <obs.hpp>
 
+#include <atomic>
+
 #include "snip-selection.hpp"
 
 // Builds (and reuses) a dedicated "Snip Record" scene holding a single
@@ -19,6 +21,13 @@ public:
 	void HandleRecordingStopped();
 
 	bool IsActive() const { return active; }
+
+	// Window-mode starts wait for the capture source to hook its
+	// window before recording begins. Cancels such a pending start.
+	void CancelPendingStart();
+	// Called (on the UI thread) when the capture hooked, or when the
+	// wait timed out and recording should start anyway.
+	void BeginRecording();
 
 	// Optional: resize the OBS canvas (base + output) to the picked
 	// area for the duration of the snip, then restore it. On by
@@ -48,8 +57,12 @@ private:
 	OBSSourceAutoRelease FindOrCreateScene();
 	obs_source_t *CreateCaptureSource(const SnipSelection &selection);
 	bool MaybeResizeCanvas(int width, int height);
+	void DeferStartUntilHooked(obs_source_t *capture);
+	void DisconnectPendingHook();
 
 	bool active = false;
+	std::atomic<bool> pendingStart{false};
+	OBSWeakSourceAutoRelease pendingCapture;
 	bool matchCanvas = true;
 	bool matchCanvasUserSet = false;
 	bool canvasResized = false;

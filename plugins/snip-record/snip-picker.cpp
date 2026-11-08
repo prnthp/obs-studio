@@ -658,6 +658,10 @@ void SnipPicker::SelectWindowAt(const QPoint &globalPos)
 	}
 
 	selectedWindowValue = WindowValueForHWND(search.found);
+	selectedWindowHandle = search.found;
+	DWORD processId = 0;
+	GetWindowThreadProcessId(search.found, &processId);
+	selectedWindowPid = processId;
 	selectedWindowPhysicalRect = QRect(search.rect.left, search.rect.top, search.rect.right - search.rect.left,
 					   search.rect.bottom - search.rect.top);
 	selectedWindowRect = PhysicalToLogicalRect(selectedWindowPhysicalRect, screen, monitor);
@@ -729,6 +733,24 @@ bool SnipPicker::BuildSelection(SnipSelection &selection) const
 	return snip::IsUsable(selection.rect, kMinRegionSize, kMinRegionSize);
 }
 
+void SnipPicker::ShowOutlineForLastSelection()
+{
+	if (!hasLastSelection) {
+		return;
+	}
+	if (lastSelection.mode == SnipSelection::Mode::Region) {
+		outline->ShowFor(QRect(lastSelection.logicalRect.x, lastSelection.logicalRect.y,
+				       lastSelection.logicalRect.width, lastSelection.logicalRect.height));
+	} else if (lastSelection.mode == SnipSelection::Mode::Window) {
+		outline->ShowForWindow(selectedWindowHandle, selectedWindowPid);
+	}
+}
+
+void SnipPicker::HideOutline()
+{
+	outline->hide();
+}
+
 void SnipPicker::StartRecording()
 {
 	if (!CanRecord()) {
@@ -739,14 +761,12 @@ void SnipPicker::StartRecording()
 	if (!BuildSelection(selection)) {
 		return;
 	}
+	lastSelection = selection;
+	hasLastSelection = true;
 
 	hide();
 	// Give the overlay a frame to disappear before capture starts, so
-	// it is not visible in the first recorded frames.
-	QTimer::singleShot(150, this, [this, selection] {
-		if (recorder->StartRecording(selection) && selection.mode == SnipSelection::Mode::Region) {
-			outline->ShowFor(QRect(selection.logicalRect.x, selection.logicalRect.y,
-					       selection.logicalRect.width, selection.logicalRect.height));
-		}
-	});
+	// it is not visible in the first recorded frames. The outline is
+	// shown later, from the module's RECORDING_STARTED handler.
+	QTimer::singleShot(150, this, [this, selection] { recorder->StartRecording(selection); });
 }

@@ -32,8 +32,11 @@ Nothing about your existing scenes, sources, or profile is modified —
 the only footprint is the extra `Snip Record` scene.
 
 While a region recording runs, a thin red outline marks the recorded
-area on screen (excluded from the capture itself). The last region is
-remembered and pre-selected the next time the picker opens.
+area on screen (excluded from the capture itself). In window mode the
+outline follows the recorded window as it moves and resizes; window
+recordings wait for the capture to hook its window before the first
+frame is recorded. The last region is remembered and pre-selected the
+next time the picker opens.
 
 Two more toolbar options, both remembered across restarts:
 **Start instantly after selecting** records as soon as a region drag

@@ -4,7 +4,9 @@
 #include <obs-module.h>
 #include <util/config-file.h>
 
+#include <chrono>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -308,12 +310,83 @@ bool SnipRecorder::StartRecording(const SnipSelection &selection)
 	active = true;
 	blog(LOG_INFO, "[snip-record] Starting recording (mode=%d, %dx%d)", int(selection.mode), selection.rect.width,
 	     selection.rect.height);
-	obs_frontend_recording_start();
+	if (selection.mode == SnipSelection::Mode::Window) {
+		// window_capture only starts producing frames once it has
+		// found and hooked its window (~1 s search + WGC session
+		// spin-up). Recording immediately would bake that dead
+		// time into the head of the video, so wait for the hook.
+		DeferStartUntilHooked(capture);
+	} else {
+		obs_frontend_recording_start();
+	}
 	return true;
+}
+
+static void BeginRecordingTask(void *param)
+{
+	static_cast<SnipRecorder *>(param)->BeginRecording();
+}
+
+static void OnCaptureHooked(void *data, calldata_t *)
+{
+	obs_queue_task(OBS_TASK_UI, BeginRecordingTask, data, false);
+}
+
+void SnipRecorder::DeferStartUntilHooked(obs_source_t *capture)
+{
+	pendingCapture = obs_source_get_weak_source(capture);
+	pendingStart = true;
+	signal_handler_connect(obs_source_get_signal_handler(capture), "hooked", OnCaptureHooked, this);
+	blog(LOG_INFO, "[snip-record] Waiting for window capture to hook before recording");
+
+	std::thread(
+		[](SnipRecorder *self) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+			if (self->pendingStart) {
+				blog(LOG_WARNING, "[snip-record] Window capture hook timed out; recording anyway");
+				obs_queue_task(OBS_TASK_UI, BeginRecordingTask, self, false);
+			}
+		},
+		this)
+		.detach();
+}
+
+void SnipRecorder::DisconnectPendingHook()
+{
+	if (pendingCapture) {
+		OBSSourceAutoRelease capture = obs_weak_source_get_source(pendingCapture);
+		if (capture) {
+			signal_handler_disconnect(obs_source_get_signal_handler(capture), "hooked", OnCaptureHooked,
+						  this);
+		}
+		pendingCapture = nullptr;
+	}
+}
+
+void SnipRecorder::BeginRecording()
+{
+	if (!pendingStart.exchange(false)) {
+		return;
+	}
+	DisconnectPendingHook();
+	if (obs_frontend_recording_active()) {
+		return;
+	}
+	blog(LOG_INFO, "[snip-record] Window capture ready; recording now");
+	obs_frontend_recording_start();
+}
+
+void SnipRecorder::CancelPendingStart()
+{
+	if (pendingStart.exchange(false)) {
+		DisconnectPendingHook();
+		blog(LOG_INFO, "[snip-record] Pending window recording start cancelled");
+	}
 }
 
 void SnipRecorder::HandleRecordingStopped()
 {
+	CancelPendingStart();
 	if (!active) {
 		RestoreCanvasIfPending();
 		return;

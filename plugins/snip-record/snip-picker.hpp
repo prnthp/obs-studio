@@ -27,6 +27,13 @@ public:
 	// Reflects the persisted "match canvas" setting in the toolbar.
 	void SetMatchCanvasChecked(bool checked, bool userSet);
 
+	// Shows the recording outline for the last confirmed selection.
+	// Called by the module on RECORDING_STARTED, so the outline only
+	// appears once recording really starts (window mode waits for
+	// the capture to hook first).
+	void ShowOutlineForLastSelection();
+	void HideOutline();
+
 	bool InstantStart() const;
 	// 0 = do nothing, 1 = open video, 2 = show in folder.
 	int PostAction() const;
@@ -87,6 +94,12 @@ private:
 	bool hasSelectedWindow = false;
 	QString selectedWindowValue;
 	QRect selectedWindowPhysicalRect;
+	void *selectedWindowHandle = nullptr;
+	unsigned long selectedWindowPid = 0;
+
+	// Last selection confirmed with Start, for the outline.
+	SnipSelection lastSelection;
+	bool hasLastSelection = false;
 
 	// Full Screen mode: logical geometry of the display under the
 	// cursor (primary display by default).

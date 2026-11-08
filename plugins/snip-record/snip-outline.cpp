@@ -9,6 +9,7 @@
 #define NOMINMAX
 #endif
 #include <Windows.h>
+#include <dwmapi.h>
 #endif
 
 SnipOutline::SnipOutline(QWidget *parent) : QWidget(parent)
@@ -18,19 +19,16 @@ SnipOutline::SnipOutline(QWidget *parent) : QWidget(parent)
 	setAttribute(Qt::WA_TransparentForMouseEvents);
 	setFocusPolicy(Qt::NoFocus);
 
-	hideTimer.setInterval(500);
-	connect(&hideTimer, &QTimer::timeout, this, [this] {
-		if (!obs_frontend_recording_active()) {
-			hide();
-		}
-	});
+	timer.setInterval(100);
+	connect(&timer, &QTimer::timeout, this, &SnipOutline::Tick);
 }
 
 void SnipOutline::ShowFor(const QRect &globalLogicalRect)
 {
+	followWindow = nullptr;
 	// Sit just outside the recorded pixels so the border does not
 	// cover (or get baked into) the edge of the video.
-	setGeometry(globalLogicalRect.adjusted(-3, -3, 3, 3));
+	setGeometry(globalLogicalRect.adjusted(-2, -2, 2, 2));
 	show();
 	raise();
 
@@ -39,13 +37,75 @@ void SnipOutline::ShowFor(const QRect &globalLogicalRect)
 	SetWindowDisplayAffinity(reinterpret_cast<HWND>(winId()), WDA_EXCLUDEFROMCAPTURE);
 #endif
 
-	hideTimer.start();
+	timer.start();
+}
+
+void SnipOutline::ShowForWindow(void *windowHandle, unsigned long processId)
+{
+	followWindow = windowHandle;
+	followProcessId = processId;
+	show();
+
+#ifdef _WIN32
+	SetWindowDisplayAffinity(reinterpret_cast<HWND>(winId()), WDA_EXCLUDEFROMCAPTURE);
+#endif
+
+	UpdateFollowRect();
+	timer.start();
+}
+
+void SnipOutline::hideEvent(QHideEvent *event)
+{
+	timer.stop();
+	followWindow = nullptr;
+	QWidget::hideEvent(event);
+}
+
+void SnipOutline::Tick()
+{
+	if (followWindow) {
+		UpdateFollowRect();
+	} else if (!obs_frontend_recording_active()) {
+		hide();
+	}
+}
+
+void SnipOutline::UpdateFollowRect()
+{
+#ifdef _WIN32
+	HWND hwnd = reinterpret_cast<HWND>(followWindow);
+	if (!hwnd || !IsWindow(hwnd)) {
+		hide();
+		return;
+	}
+
+	DWORD pid = 0;
+	GetWindowThreadProcessId(hwnd, &pid);
+	if (pid != followProcessId || !obs_frontend_recording_active()) {
+		hide();
+		return;
+	}
+
+	RECT rect = {};
+	if (FAILED(DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &rect, sizeof(rect)))) {
+		GetWindowRect(hwnd, &rect);
+	}
+
+	// Native positioning in physical pixels: the border tracks the
+	// window even across displays with different DPI scales, with no
+	// logical<->physical conversion to drift. (A minimized window
+	// reports off-screen coordinates, which parks the border too.)
+	SetWindowPos(reinterpret_cast<HWND>(winId()), HWND_TOPMOST, rect.left - 2, rect.top - 2,
+		     (rect.right - rect.left) + 4, (rect.bottom - rect.top) + 4, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+#else
+	hide();
+#endif
 }
 
 void SnipOutline::paintEvent(QPaintEvent *)
 {
 	QPainter painter(this);
-	painter.setPen(QPen(QColor(232, 17, 35), 2));
+	painter.setPen(QPen(QColor(232, 17, 35), 1));
 	painter.setBrush(Qt::NoBrush);
-	painter.drawRect(rect().adjusted(1, 1, -1, -1));
+	painter.drawRect(rect().adjusted(0, 0, -1, -1));
 }

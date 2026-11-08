@@ -82,6 +82,7 @@ void TogglePickerOrStop()
 		blog(LOG_INFO, "[snip-record] Stopping recording via hotkey/menu");
 		obs_frontend_recording_stop();
 	} else {
+		recorder.CancelPendingStart();
 		recorder.RestoreCanvasIfPending();
 		picker->OpenPicker();
 	}
@@ -197,7 +198,17 @@ void DoPostRecordingAction()
 
 void FrontendEvent(enum obs_frontend_event event, void *)
 {
-	if (event == OBS_FRONTEND_EVENT_RECORDING_STOPPED) {
+	if (event == OBS_FRONTEND_EVENT_RECORDING_STARTED) {
+		// Only now is recording really running (window mode waits
+		// for the capture to hook first), so only now show the
+		// outline.
+		if (recorder.IsActive() && picker) {
+			picker->ShowOutlineForLastSelection();
+		}
+	} else if (event == OBS_FRONTEND_EVENT_RECORDING_STOPPED) {
+		if (picker) {
+			picker->HideOutline();
+		}
 		const bool wasSnipRecording = recorder.IsActive();
 		recorder.HandleRecordingStopped();
 		if (wasSnipRecording) {

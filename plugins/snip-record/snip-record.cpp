@@ -5,9 +5,23 @@
 
 #include <QAction>
 #include <QCoreApplication>
+#include <QDir>
+#include <QFileInfo>
 #include <QMainWindow>
 #include <QObject>
 #include <QTimer>
+
+#include <algorithm>
+#include <functional>
+#include <vector>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
+#include <shellapi.h>
+#endif
 
 #include "snip-picker.hpp"
 #include "snip-recorder.hpp"
@@ -82,10 +96,114 @@ void HotkeyPressed(void *, obs_hotkey_id, obs_hotkey_t *, bool pressed)
 	QTimer::singleShot(0, QCoreApplication::instance(), [] { TogglePickerOrStop(); });
 }
 
+#ifdef _WIN32
+
+std::vector<HWND> SnapshotTopWindows()
+{
+	std::vector<HWND> windows;
+	EnumWindows(
+		[](HWND hwnd, LPARAM param) {
+			if (IsWindowVisible(hwnd) && GetWindowTextLengthW(hwnd) > 0) {
+				reinterpret_cast<std::vector<HWND> *>(param)->push_back(hwnd);
+			}
+			return TRUE;
+		},
+		reinterpret_cast<LPARAM>(&windows));
+	return windows;
+}
+
+// Windows only lets the foreground process hand over the foreground,
+// and OBS is usually in the background when a snip ends via hotkey.
+// Attaching to the current foreground thread lifts that restriction
+// for this one deliberate handoff.
+void ForceForegroundWindow(HWND hwnd)
+{
+	const DWORD foregroundThread = GetWindowThreadProcessId(GetForegroundWindow(), nullptr);
+	const DWORD currentThread = GetCurrentThreadId();
+	AttachThreadInput(foregroundThread, currentThread, TRUE);
+	ShowWindow(hwnd, IsIconic(hwnd) ? SW_RESTORE : SW_SHOW);
+	BringWindowToTop(hwnd);
+	SetForegroundWindow(hwnd);
+	AttachThreadInput(foregroundThread, currentThread, FALSE);
+}
+
+// Poll briefly for a top-level window that did not exist before the
+// action (the player window, or the Explorer folder window) and pull
+// it to the foreground.
+void WatchForNewWindow(std::vector<HWND> before, int attemptsLeft)
+{
+	if (attemptsLeft <= 0) {
+		return;
+	}
+	QTimer::singleShot(300, QCoreApplication::instance(), [before, attemptsLeft] {
+		for (HWND hwnd : SnapshotTopWindows()) {
+			DWORD pid = 0;
+			GetWindowThreadProcessId(hwnd, &pid);
+			if (pid == GetCurrentProcessId()) {
+				continue;
+			}
+			if (std::find(before.begin(), before.end(), hwnd) == before.end()) {
+				ForceForegroundWindow(hwnd);
+				return;
+			}
+		}
+		WatchForNewWindow(before, attemptsLeft - 1);
+	});
+}
+
+#endif // _WIN32
+
+// Runs the picker's "After recording" choice for a finished snip.
+void DoPostRecordingAction()
+{
+	const int action = picker ? picker->PostAction() : 0;
+	if (action == 0) {
+		return;
+	}
+
+	char *rawPath = obs_frontend_get_last_recording();
+	if (!rawPath) {
+		return;
+	}
+	const QString path = QString::fromUtf8(rawPath);
+	bfree(rawPath);
+
+	if (path.isEmpty() || !QFileInfo::exists(path)) {
+		return;
+	}
+
+	blog(LOG_INFO, "[snip-record] Post-recording action %d for '%s'", action, path.toUtf8().constData());
+#ifdef _WIN32
+	const std::vector<HWND> before = SnapshotTopWindows();
+	const std::wstring nativePath = QDir::toNativeSeparators(path).toStdWString();
+	if (action == 1) {
+		ShellExecuteW(nullptr, L"open", nativePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+	} else if (action == 2) {
+		// Exact command line, no Qt argument re-quoting: a mangled
+		// /select argument makes Explorer open Documents instead.
+		std::wstring commandLine = L"explorer.exe /select,\"" + nativePath + L"\"";
+		STARTUPINFOW startupInfo = {};
+		startupInfo.cb = sizeof(startupInfo);
+		PROCESS_INFORMATION processInfo = {};
+		if (CreateProcessW(nullptr, commandLine.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr,
+				   &startupInfo, &processInfo)) {
+			CloseHandle(processInfo.hThread);
+			CloseHandle(processInfo.hProcess);
+		}
+	}
+	WatchForNewWindow(before, 16);
+#endif
+}
+
 void FrontendEvent(enum obs_frontend_event event, void *)
 {
 	if (event == OBS_FRONTEND_EVENT_RECORDING_STOPPED) {
+		const bool wasSnipRecording = recorder.IsActive();
 		recorder.HandleRecordingStopped();
+		if (wasSnipRecording) {
+			// Brief delay so the output file is fully closed.
+			QTimer::singleShot(500, QCoreApplication::instance(), [] { DoPostRecordingAction(); });
+		}
 	} else if (event == OBS_FRONTEND_EVENT_FINISHED_LOADING || event == OBS_FRONTEND_EVENT_PROFILE_CHANGED) {
 		LoadHotkeyBinding();
 		// Undo a canvas resize left behind by a crash mid-snip.
@@ -99,6 +217,8 @@ void SaveSettings(obs_data_t *save_data, bool saving, void *)
 		OBSDataAutoRelease obj = obs_data_create();
 		obs_data_set_bool(obj, "matchCanvas", recorder.MatchCanvas());
 		obs_data_set_bool(obj, "matchCanvasUserSet", recorder.MatchCanvasUserSet());
+		obs_data_set_bool(obj, "instantStart", picker ? picker->InstantStart() : false);
+		obs_data_set_int(obj, "postAction", picker ? picker->PostAction() : 0);
 		obs_data_set_obj(save_data, "snip-record", obj);
 	} else {
 		OBSDataAutoRelease obj = obs_data_get_obj(save_data, "snip-record");
@@ -111,6 +231,10 @@ void SaveSettings(obs_data_t *save_data, bool saving, void *)
 					     obs_data_get_bool(obj, "matchCanvasUserSet");
 			const bool checked = userSet ? obs_data_get_bool(obj, "matchCanvas") : true;
 			picker->SetMatchCanvasChecked(checked, userSet);
+			if (obj) {
+				picker->SetInstantStartChecked(obs_data_get_bool(obj, "instantStart"));
+				picker->SetPostAction(int(obs_data_get_int(obj, "postAction")));
+			}
 		}
 	}
 }

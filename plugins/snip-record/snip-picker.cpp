@@ -6,6 +6,7 @@
 #include <QApplication>
 #include <QButtonGroup>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QFontMetrics>
 #include <QGuiApplication>
 #include <QHBoxLayout>
@@ -259,6 +260,18 @@ SnipPicker::SnipPicker(SnipRecorder *recorder_, QWidget *parent) : QWidget(paren
 	matchCanvasCheck = new QCheckBox(obs_module_text("SnipRecord.Picker.MatchCanvas"), toolbar);
 	matchCanvasCheck->setChecked(true); // default; a saved setting may override on load
 	matchCanvasCheck->setFocusPolicy(Qt::NoFocus);
+
+	instantStartCheck = new QCheckBox(obs_module_text("SnipRecord.Picker.InstantStart"), toolbar);
+	instantStartCheck->setFocusPolicy(Qt::NoFocus);
+	instantStartCheck->setStyleSheet("QCheckBox { color: #ddd; padding: 2px 6px; }");
+
+	auto *postActionLabel = new QLabel(obs_module_text("SnipRecord.Picker.AfterRecording"), toolbar);
+	postActionLabel->setStyleSheet("color: #ddd; padding: 2px 6px;");
+	postActionCombo = new QComboBox(toolbar);
+	postActionCombo->setFocusPolicy(Qt::NoFocus);
+	postActionCombo->addItem(obs_module_text("SnipRecord.Picker.After.Nothing"));
+	postActionCombo->addItem(obs_module_text("SnipRecord.Picker.After.OpenVideo"));
+	postActionCombo->addItem(obs_module_text("SnipRecord.Picker.After.ShowInFolder"));
 	matchCanvasCheck->setStyleSheet("QCheckBox { color: #ddd; padding: 2px 6px; }");
 
 	hintLabel = new QLabel(toolbar);
@@ -276,12 +289,20 @@ SnipPicker::SnipPicker(SnipRecorder *recorder_, QWidget *parent) : QWidget(paren
 	auto *optionsRow = new QHBoxLayout;
 	optionsRow->setContentsMargins(6, 0, 6, 0);
 	optionsRow->addWidget(matchCanvasCheck);
+	optionsRow->addWidget(instantStartCheck);
 	optionsRow->addStretch();
+
+	auto *postActionRow = new QHBoxLayout;
+	postActionRow->setContentsMargins(6, 0, 6, 0);
+	postActionRow->addWidget(postActionLabel);
+	postActionRow->addWidget(postActionCombo);
+	postActionRow->addStretch();
 
 	auto *toolbarLayout = new QVBoxLayout(toolbar);
 	toolbarLayout->setContentsMargins(0, 0, 0, 6);
 	toolbarLayout->addLayout(buttonsRow);
 	toolbarLayout->addLayout(optionsRow);
+	toolbarLayout->addLayout(postActionRow);
 	toolbarLayout->addWidget(hintLabel);
 
 	connect(regionButton, &QPushButton::clicked, this, [this] { SetMode(SnipSelection::Mode::Region); });
@@ -293,6 +314,8 @@ SnipPicker::SnipPicker(SnipRecorder *recorder_, QWidget *parent) : QWidget(paren
 		recorder->SetMatchCanvas(checked);
 		obs_frontend_save(); // persist via the module's save callback
 	});
+	connect(instantStartCheck, &QCheckBox::toggled, this, [](bool) { obs_frontend_save(); });
+	connect(postActionCombo, &QComboBox::currentIndexChanged, this, [](int) { obs_frontend_save(); });
 
 	outline = new SnipOutline();
 
@@ -304,6 +327,35 @@ void SnipPicker::SetMatchCanvasChecked(bool checked, bool userSet)
 	const QSignalBlocker blocker(matchCanvasCheck);
 	matchCanvasCheck->setChecked(checked);
 	recorder->LoadMatchCanvas(checked, userSet);
+}
+
+bool SnipPicker::InstantStart() const
+{
+	return instantStartCheck->isChecked();
+}
+
+int SnipPicker::PostAction() const
+{
+	return postActionCombo->currentIndex();
+}
+
+void SnipPicker::SetInstantStartChecked(bool checked)
+{
+	const QSignalBlocker blocker(instantStartCheck);
+	instantStartCheck->setChecked(checked);
+}
+
+void SnipPicker::SetPostAction(int action)
+{
+	const QSignalBlocker blocker(postActionCombo);
+	postActionCombo->setCurrentIndex(std::clamp(action, 0, postActionCombo->count() - 1));
+}
+
+void SnipPicker::MaybeInstantStart()
+{
+	if (instantStartCheck->isChecked() && CanRecord()) {
+		StartRecording();
+	}
 }
 
 void SnipPicker::OpenPicker()
@@ -463,6 +515,9 @@ void SnipPicker::mousePressEvent(QMouseEvent *event)
 	}
 	UpdateToolbar();
 	update();
+	if (mode != SnipSelection::Mode::Region) {
+		MaybeInstantStart();
+	}
 }
 
 void SnipPicker::mouseMoveEvent(QMouseEvent *event)
@@ -500,6 +555,9 @@ void SnipPicker::mouseReleaseEvent(QMouseEvent *event)
 	}
 	UpdateToolbar();
 	update();
+	if (!regionRect.isEmpty()) {
+		MaybeInstantStart();
+	}
 }
 
 void SnipPicker::mouseDoubleClickEvent(QMouseEvent *event)

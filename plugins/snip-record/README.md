@@ -35,6 +35,12 @@ While a region recording runs, a thin red outline marks the recorded
 area on screen (excluded from the capture itself). The last region is
 remembered and pre-selected the next time the picker opens.
 
+Two more toolbar options, both remembered across restarts:
+**Start instantly after selecting** records as soon as a region drag
+ends, a window is clicked, or a display is clicked, without waiting
+for Enter. **After recording** can open the finished video, show it
+selected in Explorer, or do nothing (default).
+
 ## Optional: match canvas to selection
 
 The picker's **Match canvas to selection** checkbox temporarily resizes

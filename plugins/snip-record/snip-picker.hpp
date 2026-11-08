@@ -7,6 +7,7 @@
 #include "snip-selection.hpp"
 
 class QCheckBox;
+class QComboBox;
 class QLabel;
 class QPushButton;
 class SnipOutline;
@@ -26,6 +27,12 @@ public:
 	// Reflects the persisted "match canvas" setting in the toolbar.
 	void SetMatchCanvasChecked(bool checked, bool userSet);
 
+	bool InstantStart() const;
+	// 0 = do nothing, 1 = open video, 2 = show in folder.
+	int PostAction() const;
+	void SetInstantStartChecked(bool checked);
+	void SetPostAction(int action);
+
 protected:
 	void showEvent(QShowEvent *event) override;
 	void hideEvent(QHideEvent *event) override;
@@ -44,6 +51,7 @@ private:
 	void SelectWindowAt(const QPoint &globalPos);
 	bool BuildSelection(SnipSelection &selection) const;
 	void StartRecording();
+	void MaybeInstantStart();
 
 	// Rect currently highlighted/selected, in global logical pixels.
 	QRect ActiveRect() const;
@@ -56,6 +64,8 @@ private:
 	QPushButton *fullScreenButton = nullptr;
 	QPushButton *recordButton = nullptr;
 	QCheckBox *matchCanvasCheck = nullptr;
+	QCheckBox *instantStartCheck = nullptr;
+	QComboBox *postActionCombo = nullptr;
 	QLabel *hintLabel = nullptr;
 	SnipOutline *outline = nullptr;
 

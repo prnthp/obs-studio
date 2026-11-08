@@ -21,7 +21,7 @@ target_sources(
 target_link_libraries(snip-record PRIVATE OBS::frontend-api OBS::libobs Qt::Widgets)
 
 if(OS_WINDOWS)
-  target_link_libraries(snip-record PRIVATE dwmapi)
+  target_link_libraries(snip-record PRIVATE dwmapi shell32 user32)
   configure_file(cmake/windows/obs-module.rc.in snip-record.rc)
   target_sources(snip-record PRIVATE snip-record.rc)
   set_property(TARGET snip-record APPEND PROPERTY AUTORCC_OPTIONS --format-version 1)

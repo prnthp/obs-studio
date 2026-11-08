@@ -24,7 +24,7 @@ public:
 	void OpenPicker();
 
 	// Reflects the persisted "match canvas" setting in the toolbar.
-	void SetMatchCanvasChecked(bool checked);
+	void SetMatchCanvasChecked(bool checked, bool userSet);
 
 protected:
 	void showEvent(QShowEvent *event) override;

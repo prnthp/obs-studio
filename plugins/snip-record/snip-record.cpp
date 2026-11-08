@@ -98,11 +98,19 @@ void SaveSettings(obs_data_t *save_data, bool saving, void *)
 	if (saving) {
 		OBSDataAutoRelease obj = obs_data_create();
 		obs_data_set_bool(obj, "matchCanvas", recorder.MatchCanvas());
+		obs_data_set_bool(obj, "matchCanvasUserSet", recorder.MatchCanvasUserSet());
 		obs_data_set_obj(save_data, "snip-record", obj);
 	} else {
 		OBSDataAutoRelease obj = obs_data_get_obj(save_data, "snip-record");
-		if (obj && picker) {
-			picker->SetMatchCanvasChecked(obs_data_get_bool(obj, "matchCanvas"));
+		if (picker) {
+			// On by default. Settings saved by older versions
+			// contain matchCanvas=false that was written
+			// automatically, not chosen, so only honor an off
+			// value the user deliberately set (UserSet marker).
+			const bool userSet = obj && obs_data_has_user_value(obj, "matchCanvasUserSet") &&
+					     obs_data_get_bool(obj, "matchCanvasUserSet");
+			const bool checked = userSet ? obs_data_get_bool(obj, "matchCanvas") : true;
+			picker->SetMatchCanvasChecked(checked, userSet);
 		}
 	}
 }

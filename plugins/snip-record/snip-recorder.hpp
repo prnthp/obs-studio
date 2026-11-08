@@ -21,10 +21,24 @@ public:
 	bool IsActive() const { return active; }
 
 	// Optional: resize the OBS canvas (base + output) to the picked
-	// area for the duration of the snip, then restore it. Off by
-	// default; persisted by the module's save callback.
-	void SetMatchCanvas(bool match) { matchCanvas = match; }
+	// area for the duration of the snip, then restore it. On by
+	// default until the user turns it off; persisted by the module's
+	// save callback.
+	// From the picker checkbox: a deliberate user choice.
+	void SetMatchCanvas(bool match)
+	{
+		matchCanvas = match;
+		matchCanvasUserSet = true;
+	}
+	// From persisted settings at load: not a user choice unless the
+	// stored setting says the user made one.
+	void LoadMatchCanvas(bool match, bool userSet)
+	{
+		matchCanvas = match;
+		matchCanvasUserSet = userSet;
+	}
 	bool MatchCanvas() const { return matchCanvas; }
+	bool MatchCanvasUserSet() const { return matchCanvasUserSet; }
 
 	// Restores the pre-snip canvas size if one is pending (after the
 	// recording stopped, or at startup after a crash mid-snip).
@@ -36,7 +50,8 @@ private:
 	bool MaybeResizeCanvas(int width, int height);
 
 	bool active = false;
-	bool matchCanvas = false;
+	bool matchCanvas = true;
+	bool matchCanvasUserSet = false;
 	bool canvasResized = false;
 	int originalBaseCX = 0;
 	int originalBaseCY = 0;

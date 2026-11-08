@@ -101,10 +101,16 @@ obs_source_t *SnipRecorder::CreateCaptureSource(const SnipSelection &selection)
 	switch (selection.mode) {
 	case SnipSelection::Mode::Window:
 		sourceId = "window_capture";
+		// Explicit WGC ("Modern"): with Automatic the source can
+		// fall back to BitBlt, which drops the title bar. The
+		// client_area=false below only takes effect on the WGC path.
+		obs_data_set_int(settings, "method", 2); // METHOD_WGC
 		obs_data_set_string(settings, "window", selection.windowValue.c_str());
 		obs_data_set_int(settings, "priority", 0); // match by class first; title/exe still recorded
 		obs_data_set_bool(settings, "cursor", true);
-		obs_data_set_bool(settings, "client_area", true);
+		// Explicit false: the source default is client-area only,
+		// which drops the title bar. Capture the whole window.
+		obs_data_set_bool(settings, "client_area", false);
 		break;
 	case SnipSelection::Mode::Region:
 	case SnipSelection::Mode::FullScreen:

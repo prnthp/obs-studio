@@ -113,6 +113,32 @@ const MonitorEntry *MonitorAtPhysicalPoint(const std::vector<MonitorEntry> &moni
 	return monitors.empty() ? nullptr : &monitors.front();
 }
 
+snip::Rect MonitorRect(const MonitorEntry *monitor)
+{
+	return {monitor->rect.left, monitor->rect.top, monitor->rect.right - monitor->rect.left,
+		monitor->rect.bottom - monitor->rect.top};
+}
+
+// Qt mouse positions are logical pixels; Win32 window APIs work in
+// physical pixels. At >100% display scaling those differ, and
+// hit-testing at the logical point searches the wrong place on the
+// desktop -- overlapping windows then appear to be picked out of
+// z-order, and the highlight lands offset from the cursor.
+POINT LogicalToPhysicalPoint(const QPoint &logical, QScreen *screen, const MonitorEntry *monitor)
+{
+	const QRect geo = screen->geometry();
+	const snip::Rect mapped =
+		snip::MapRect({logical.x(), logical.y(), 1, 1}, ToSnipRect(geo), MonitorRect(monitor));
+	return {mapped.x, mapped.y};
+}
+
+QRect PhysicalToLogicalRect(const QRect &physical, QScreen *screen, const MonitorEntry *monitor)
+{
+	const snip::Rect logical =
+		snip::MapRect(ToSnipRect(physical), MonitorRect(monitor), ToSnipRect(screen->geometry()));
+	return {logical.x, logical.y, logical.width, logical.height};
+}
+
 // Same escaping win-capture's ms_build_window_strings() expects:
 // '#' -> "#22" first, then ':' -> "#3A".
 QString EncodeWindowComponent(QString value)
@@ -231,6 +257,7 @@ SnipPicker::SnipPicker(SnipRecorder *recorder_, QWidget *parent) : QWidget(paren
 	cancelButton->setStyleSheet("QPushButton { color: #ddd; border: none; padding: 6px 12px; }");
 
 	matchCanvasCheck = new QCheckBox(obs_module_text("SnipRecord.Picker.MatchCanvas"), toolbar);
+	matchCanvasCheck->setChecked(true); // default; a saved setting may override on load
 	matchCanvasCheck->setFocusPolicy(Qt::NoFocus);
 	matchCanvasCheck->setStyleSheet("QCheckBox { color: #ddd; padding: 2px 6px; }");
 
@@ -272,11 +299,11 @@ SnipPicker::SnipPicker(SnipRecorder *recorder_, QWidget *parent) : QWidget(paren
 	SetMode(SnipSelection::Mode::Region);
 }
 
-void SnipPicker::SetMatchCanvasChecked(bool checked)
+void SnipPicker::SetMatchCanvasChecked(bool checked, bool userSet)
 {
 	const QSignalBlocker blocker(matchCanvasCheck);
 	matchCanvasCheck->setChecked(checked);
-	recorder->SetMatchCanvas(checked);
+	recorder->LoadMatchCanvas(checked, userSet);
 }
 
 void SnipPicker::OpenPicker()
@@ -518,28 +545,28 @@ void SnipPicker::keyPressEvent(QKeyEvent *event)
 void SnipPicker::UpdateHoverWindow(const QPoint &globalPos)
 {
 #ifdef _WIN32
-	WindowSearch search = {{globalPos.x(), globalPos.y()}, reinterpret_cast<HWND>(winId()), nullptr, {}};
+	QScreen *screen = QGuiApplication::screenAt(globalPos);
+	if (!screen) {
+		screen = QGuiApplication::primaryScreen();
+	}
+	const std::vector<MonitorEntry> monitors = AllMonitors();
+	const MonitorEntry *monitor = screen ? MonitorForScreen(monitors, screen) : nullptr;
+	if (!screen || !monitor) {
+		hasHoverWindow = false;
+		return;
+	}
+
+	// Hit-test in physical pixels (see LogicalToPhysicalPoint) so
+	// EnumWindows' z-order is evaluated where the cursor really is.
+	WindowSearch search = {LogicalToPhysicalPoint(globalPos, screen, monitor),
+			       reinterpret_cast<HWND>(winId()),
+			       nullptr,
+			       {}};
 	EnumWindows(FindWindowAtPoint, reinterpret_cast<LPARAM>(&search));
 	if (search.found) {
-		// Convert physical Win32 rect to Qt logical pixels via the
-		// display it is on (fraction mapping, DPI-safe).
-		const std::vector<MonitorEntry> monitors = AllMonitors();
-		const MonitorEntry *monitor = MonitorAtPhysicalPoint(monitors, search.rect);
-		const snip::Rect physical = {search.rect.left, search.rect.top, search.rect.right - search.rect.left,
-					     search.rect.bottom - search.rect.top};
-		QScreen *screen = QGuiApplication::screenAt(globalPos);
-		if (monitor && screen) {
-			const QRect geo = screen->geometry();
-			const snip::Rect logical =
-				snip::MapRect(physical,
-					      ToSnipRect(QRect(monitor->rect.left, monitor->rect.top,
-							       monitor->rect.right - monitor->rect.left,
-							       monitor->rect.bottom - monitor->rect.top)),
-					      ToSnipRect(geo));
-			hoverWindowRect = QRect(logical.x, logical.y, logical.width, logical.height);
-		} else {
-			hoverWindowRect = QRect(physical.x, physical.y, physical.width, physical.height);
-		}
+		const QRect physical(search.rect.left, search.rect.top, search.rect.right - search.rect.left,
+				     search.rect.bottom - search.rect.top);
+		hoverWindowRect = PhysicalToLogicalRect(physical, screen, monitor);
 		hasHoverWindow = true;
 	} else {
 		hasHoverWindow = false;
@@ -553,7 +580,20 @@ void SnipPicker::UpdateHoverWindow(const QPoint &globalPos)
 void SnipPicker::SelectWindowAt(const QPoint &globalPos)
 {
 #ifdef _WIN32
-	WindowSearch search = {{globalPos.x(), globalPos.y()}, reinterpret_cast<HWND>(winId()), nullptr, {}};
+	QScreen *screen = QGuiApplication::screenAt(globalPos);
+	if (!screen) {
+		screen = QGuiApplication::primaryScreen();
+	}
+	const std::vector<MonitorEntry> monitors = AllMonitors();
+	const MonitorEntry *monitor = screen ? MonitorForScreen(monitors, screen) : nullptr;
+	if (!screen || !monitor) {
+		return;
+	}
+
+	WindowSearch search = {LogicalToPhysicalPoint(globalPos, screen, monitor),
+			       reinterpret_cast<HWND>(winId()),
+			       nullptr,
+			       {}};
 	EnumWindows(FindWindowAtPoint, reinterpret_cast<LPARAM>(&search));
 	if (!search.found) {
 		return;
@@ -562,21 +602,7 @@ void SnipPicker::SelectWindowAt(const QPoint &globalPos)
 	selectedWindowValue = WindowValueForHWND(search.found);
 	selectedWindowPhysicalRect = QRect(search.rect.left, search.rect.top, search.rect.right - search.rect.left,
 					   search.rect.bottom - search.rect.top);
-	// Recompute the logical rect through the same path as hover.
-	const std::vector<MonitorEntry> monitors = AllMonitors();
-	const MonitorEntry *monitor = MonitorAtPhysicalPoint(monitors, search.rect);
-	QScreen *screen = QGuiApplication::screenAt(globalPos);
-	if (monitor && screen) {
-		const QRect geo = screen->geometry();
-		const snip::Rect logical =
-			snip::MapRect(ToSnipRect(selectedWindowPhysicalRect),
-				      {monitor->rect.left, monitor->rect.top, monitor->rect.right - monitor->rect.left,
-				       monitor->rect.bottom - monitor->rect.top},
-				      ToSnipRect(geo));
-		selectedWindowRect = QRect(logical.x, logical.y, logical.width, logical.height);
-	} else {
-		selectedWindowRect = selectedWindowPhysicalRect;
-	}
+	selectedWindowRect = PhysicalToLogicalRect(selectedWindowPhysicalRect, screen, monitor);
 	hasSelectedWindow = true;
 	hasHoverWindow = false;
 #else

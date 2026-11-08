@@ -43,8 +43,8 @@ even dimensions, minimum 32×32 — so the file comes out at exactly the
 selection's size. The original canvas size is restored when the
 recording stops; it is saved to the profile *before* resizing, so even
 a crash mid-recording is undone on the next OBS start. It is skipped
-while streaming. Leave it off if you don't want your global video
-settings touched; it is off by default.
+while streaming. It is on by default; uncheck it if you don't want
+your global video settings touched, and that choice is remembered.
 
 ## Notes and limitations
 

@@ -148,10 +148,33 @@ void SetGlobalDefaultBool(const char *key, bool value)
 
 void ApplyInstallDefaults()
 {
+	// Determine "fresh install" once, before anything below sets
+	// FirstRun: true only on the very first launch ever.
+	static bool freshChecked = false;
+	static bool freshInstall = false;
+	if (!freshChecked) {
+		freshChecked = true;
+		if (config_t *user = obs_frontend_get_user_config()) {
+			freshInstall = !config_get_bool(user, "General", "FirstRun");
+		}
+	}
+
 	SetGlobalDefaultBool("SysTrayEnabled", true);
 	SetGlobalDefaultBool("SysTrayWhenStarted", true);
 	SetGlobalDefaultBool("SysTrayMinimizeToTray", true);
 	SetGlobalDefaultBool("TrayClickStopsRecording", true);
+
+	// Skip OBS's first-run Auto-Config Wizard: this recorder never
+	// streams, so its questions (and bandwidth test) only get in the
+	// way. OBSBasic queues the wizard when FirstRun is unset and the
+	// app config has no LastVersion; module load happens before the
+	// main window reads it, so setting FirstRun here wins.
+	if (config_t *user = obs_frontend_get_user_config()) {
+		if (!config_get_bool(user, "General", "FirstRun")) {
+			config_set_bool(user, "General", "FirstRun", true);
+			config_save(user);
+		}
+	}
 
 	config_t *profile = obs_frontend_get_profile_config();
 	if (!profile) {
@@ -160,6 +183,19 @@ void ApplyInstallDefaults()
 	bool changed = false;
 	if (!config_has_user_value(profile, "SimpleOutput", "RecFormat2")) {
 		config_set_string(profile, "SimpleOutput", "RecFormat2", "mp4");
+		changed = true;
+	}
+	// Recording-oriented defaults (what the wizard's "recording"
+	// path would pick): high quality, 60 fps instead of streaming
+	// bitrates at 30. OBS pre-creates Stream/30 profile defaults
+	// before modules load, so "only if unset" never fires; force
+	// them, but only on a genuinely fresh install - once FirstRun
+	// is set we never touch these again, so deliberate user changes
+	// in Settings are permanent.
+	if (freshInstall) {
+		config_set_string(profile, "SimpleOutput", "RecQuality", "HQ");
+		config_set_uint(profile, "Video", "FPSType", 1); // integer FPS
+		config_set_uint(profile, "Video", "FPSInt", 60);
 		changed = true;
 	}
 	if (!config_has_user_value(profile, "SimpleOutput", "FilePath")) {

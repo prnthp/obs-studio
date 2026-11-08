@@ -5,6 +5,7 @@
 
 #include <QApplication>
 #include <QButtonGroup>
+#include <QCheckBox>
 #include <QFontMetrics>
 #include <QGuiApplication>
 #include <QHBoxLayout>
@@ -17,6 +18,7 @@
 #include <QTimer>
 #include <QVBoxLayout>
 
+#include "snip-outline.hpp"
 #include "snip-recorder.hpp"
 
 #include <iterator>
@@ -228,6 +230,10 @@ SnipPicker::SnipPicker(SnipRecorder *recorder_, QWidget *parent) : QWidget(paren
 	cancelButton->setFocusPolicy(Qt::NoFocus);
 	cancelButton->setStyleSheet("QPushButton { color: #ddd; border: none; padding: 6px 12px; }");
 
+	matchCanvasCheck = new QCheckBox(obs_module_text("SnipRecord.Picker.MatchCanvas"), toolbar);
+	matchCanvasCheck->setFocusPolicy(Qt::NoFocus);
+	matchCanvasCheck->setStyleSheet("QCheckBox { color: #ddd; padding: 2px 6px; }");
+
 	hintLabel = new QLabel(toolbar);
 	hintLabel->setStyleSheet("color: #aaa; padding: 2px 12px;");
 
@@ -240,9 +246,15 @@ SnipPicker::SnipPicker(SnipRecorder *recorder_, QWidget *parent) : QWidget(paren
 	buttonsRow->addWidget(recordButton);
 	buttonsRow->addWidget(cancelButton);
 
+	auto *optionsRow = new QHBoxLayout;
+	optionsRow->setContentsMargins(6, 0, 6, 0);
+	optionsRow->addWidget(matchCanvasCheck);
+	optionsRow->addStretch();
+
 	auto *toolbarLayout = new QVBoxLayout(toolbar);
 	toolbarLayout->setContentsMargins(0, 0, 0, 6);
 	toolbarLayout->addLayout(buttonsRow);
+	toolbarLayout->addLayout(optionsRow);
 	toolbarLayout->addWidget(hintLabel);
 
 	connect(regionButton, &QPushButton::clicked, this, [this] { SetMode(SnipSelection::Mode::Region); });
@@ -250,15 +262,28 @@ SnipPicker::SnipPicker(SnipRecorder *recorder_, QWidget *parent) : QWidget(paren
 	connect(fullScreenButton, &QPushButton::clicked, this, [this] { SetMode(SnipSelection::Mode::FullScreen); });
 	connect(recordButton, &QPushButton::clicked, this, &SnipPicker::StartRecording);
 	connect(cancelButton, &QPushButton::clicked, this, &QWidget::hide);
+	connect(matchCanvasCheck, &QCheckBox::toggled, this, [this](bool checked) {
+		recorder->SetMatchCanvas(checked);
+		obs_frontend_save(); // persist via the module's save callback
+	});
+
+	outline = new SnipOutline();
 
 	SetMode(SnipSelection::Mode::Region);
+}
+
+void SnipPicker::SetMatchCanvasChecked(bool checked)
+{
+	const QSignalBlocker blocker(matchCanvasCheck);
+	matchCanvasCheck->setChecked(checked);
+	recorder->SetMatchCanvas(checked);
 }
 
 void SnipPicker::OpenPicker()
 {
 	recordingBlocked = obs_frontend_recording_active();
 	dragging = false;
-	regionRect = {};
+	regionRect = lastRegion; // pre-select the previous region, if any
 	hasHoverWindow = false;
 	hasSelectedWindow = false;
 
@@ -443,6 +468,8 @@ void SnipPicker::mouseReleaseEvent(QMouseEvent *event)
 	regionRect = QRect(dragStart, dragCurrent).normalized();
 	if (regionRect.width() < kMinRegionSize || regionRect.height() < kMinRegionSize) {
 		regionRect = {};
+	} else {
+		lastRegion = regionRect;
 	}
 	UpdateToolbar();
 	update();
@@ -567,6 +594,7 @@ bool SnipPicker::BuildSelection(SnipSelection &selection) const
 			return false;
 		}
 		selection.rect = ToSnipRect(selectedWindowPhysicalRect);
+		selection.logicalRect = ToSnipRect(selectedWindowRect);
 		selection.windowValue = selectedWindowValue.toUtf8().constData();
 #ifdef _WIN32
 		const std::vector<MonitorEntry> monitors = AllMonitors();
@@ -586,6 +614,7 @@ bool SnipPicker::BuildSelection(SnipSelection &selection) const
 	if (!logical.isValid() || logical.isEmpty()) {
 		return false;
 	}
+	selection.logicalRect = ToSnipRect(logical);
 
 	QScreen *screen = QGuiApplication::screenAt(logical.center());
 	if (!screen) {
@@ -630,5 +659,10 @@ void SnipPicker::StartRecording()
 	hide();
 	// Give the overlay a frame to disappear before capture starts, so
 	// it is not visible in the first recorded frames.
-	QTimer::singleShot(150, this, [this, selection] { recorder->StartRecording(selection); });
+	QTimer::singleShot(150, this, [this, selection] {
+		if (recorder->StartRecording(selection) && selection.mode == SnipSelection::Mode::Region) {
+			outline->ShowFor(QRect(selection.logicalRect.x, selection.logicalRect.y,
+					       selection.logicalRect.width, selection.logicalRect.height));
+		}
+	});
 }

@@ -2,6 +2,7 @@
 
 #include <obs-frontend-api.h>
 #include <obs-module.h>
+#include <util/config-file.h>
 
 #include <string>
 #include <vector>
@@ -131,6 +132,112 @@ obs_source_t *SnipRecorder::CreateCaptureSource(const SnipSelection &selection)
 	return source;
 }
 
+bool SnipRecorder::MaybeResizeCanvas(int width, int height)
+{
+	if (!matchCanvas) {
+		return false;
+	}
+	if (obs_frontend_streaming_active()) {
+		blog(LOG_WARNING, "[snip-record] Not resizing canvas while streaming");
+		return false;
+	}
+
+	// Encoders need even dimensions; OBS requires at least 32.
+	const int targetW = width & ~1;
+	const int targetH = height & ~1;
+	if (targetW < 32 || targetH < 32) {
+		blog(LOG_WARNING, "[snip-record] Selection %dx%d too small to resize canvas", width, height);
+		return false;
+	}
+
+	obs_video_info videoInfo = {};
+	if (!obs_get_video_info(&videoInfo)) {
+		return false;
+	}
+	if (int(videoInfo.base_width) == targetW && int(videoInfo.base_height) == targetH) {
+		return false; // already the right size
+	}
+
+	config_t *config = obs_frontend_get_profile_config();
+	if (!config) {
+		return false;
+	}
+
+	originalBaseCX = int(videoInfo.base_width);
+	originalBaseCY = int(videoInfo.base_height);
+	originalOutputCX = int(videoInfo.output_width);
+	originalOutputCY = int(videoInfo.output_height);
+
+	// Persist the original size *before* shrinking, so even a crash
+	// mid-recording is undone on the next OBS start.
+	config_set_bool(config, "SnipRecord", "PendingCanvasRestore", true);
+	config_set_uint(config, "SnipRecord", "OrigBaseCX", uint64_t(originalBaseCX));
+	config_set_uint(config, "SnipRecord", "OrigBaseCY", uint64_t(originalBaseCY));
+	config_set_uint(config, "SnipRecord", "OrigOutputCX", uint64_t(originalOutputCX));
+	config_set_uint(config, "SnipRecord", "OrigOutputCY", uint64_t(originalOutputCY));
+	config_set_uint(config, "Video", "BaseCX", uint64_t(targetW));
+	config_set_uint(config, "Video", "BaseCY", uint64_t(targetH));
+	config_set_uint(config, "Video", "OutputCX", uint64_t(targetW));
+	config_set_uint(config, "Video", "OutputCY", uint64_t(targetH));
+	config_save(config);
+
+	obs_frontend_reset_video();
+
+	obs_video_info newInfo = {};
+	const bool resized = obs_get_video_info(&newInfo) && int(newInfo.base_width) == targetW &&
+			     int(newInfo.base_height) == targetH;
+	if (!resized) {
+		blog(LOG_WARNING, "[snip-record] Canvas resize refused; recording at current canvas size");
+		RestoreCanvasIfPending();
+		return false;
+	}
+
+	canvasResized = true;
+	blog(LOG_INFO, "[snip-record] Canvas resized to %dx%d for snip (was %dx%d)", targetW, targetH, originalBaseCX,
+	     originalBaseCY);
+	return true;
+}
+
+void SnipRecorder::RestoreCanvasIfPending()
+{
+	config_t *config = obs_frontend_get_profile_config();
+	if (!config) {
+		return;
+	}
+
+	const bool pendingInConfig = config_get_bool(config, "SnipRecord", "PendingCanvasRestore");
+	if (!canvasResized && !pendingInConfig) {
+		return;
+	}
+	if (obs_frontend_recording_active() || obs_frontend_streaming_active()) {
+		return;
+	}
+
+	const int baseCX = canvasResized ? originalBaseCX : int(config_get_uint(config, "SnipRecord", "OrigBaseCX"));
+	const int baseCY = canvasResized ? originalBaseCY : int(config_get_uint(config, "SnipRecord", "OrigBaseCY"));
+	const int outputCX = canvasResized ? originalOutputCX
+					   : int(config_get_uint(config, "SnipRecord", "OrigOutputCX"));
+	const int outputCY = canvasResized ? originalOutputCY
+					   : int(config_get_uint(config, "SnipRecord", "OrigOutputCY"));
+
+	canvasResized = false;
+	config_remove_value(config, "SnipRecord", "PendingCanvasRestore");
+	config_remove_value(config, "SnipRecord", "OrigBaseCX");
+	config_remove_value(config, "SnipRecord", "OrigBaseCY");
+	config_remove_value(config, "SnipRecord", "OrigOutputCX");
+	config_remove_value(config, "SnipRecord", "OrigOutputCY");
+
+	if (baseCX >= 32 && baseCY >= 32) {
+		config_set_uint(config, "Video", "BaseCX", uint64_t(baseCX));
+		config_set_uint(config, "Video", "BaseCY", uint64_t(baseCY));
+		config_set_uint(config, "Video", "OutputCX", uint64_t(outputCX >= 32 ? outputCX : baseCX));
+		config_set_uint(config, "Video", "OutputCY", uint64_t(outputCY >= 32 ? outputCY : baseCY));
+		config_save(config);
+		obs_frontend_reset_video();
+		blog(LOG_INFO, "[snip-record] Canvas restored to %dx%d", baseCX, baseCY);
+	}
+}
+
 bool SnipRecorder::StartRecording(const SnipSelection &selection)
 {
 	if (obs_frontend_recording_active()) {
@@ -168,6 +275,10 @@ bool SnipRecorder::StartRecording(const SnipSelection &selection)
 	}
 	snipScene = obs_source_get_weak_source(sceneSource);
 
+	// Optional: shrink the canvas to the picked area before the item
+	// is fitted to it. Restored in HandleRecordingStopped().
+	MaybeResizeCanvas(selection.rect.width, selection.rect.height);
+
 	ClearSceneItems(scene);
 
 	OBSSourceAutoRelease capture = CreateCaptureSource(selection);
@@ -198,6 +309,7 @@ bool SnipRecorder::StartRecording(const SnipSelection &selection)
 void SnipRecorder::HandleRecordingStopped()
 {
 	if (!active) {
+		RestoreCanvasIfPending();
 		return;
 	}
 	active = false;
@@ -207,12 +319,12 @@ void SnipRecorder::HandleRecordingStopped()
 	snipScene = nullptr;
 	previousScene = nullptr;
 
-	if (!snip || !previous) {
-		return;
+	if (snip && previous) {
+		OBSSourceAutoRelease currentScene = obs_frontend_get_current_scene();
+		if (currentScene && currentScene.Get() == snip.Get()) {
+			obs_frontend_set_current_scene(previous);
+		}
 	}
 
-	OBSSourceAutoRelease currentScene = obs_frontend_get_current_scene();
-	if (currentScene && currentScene.Get() == snip.Get()) {
-		obs_frontend_set_current_scene(previous);
-	}
+	RestoreCanvasIfPending();
 }

@@ -6,8 +6,10 @@
 
 #include "snip-selection.hpp"
 
+class QCheckBox;
 class QLabel;
 class QPushButton;
+class SnipOutline;
 class SnipRecorder;
 
 // Fullscreen, Snipping Tool-style overlay covering the virtual desktop.
@@ -20,6 +22,9 @@ public:
 	explicit SnipPicker(SnipRecorder *recorder, QWidget *parent = nullptr);
 
 	void OpenPicker();
+
+	// Reflects the persisted "match canvas" setting in the toolbar.
+	void SetMatchCanvasChecked(bool checked);
 
 protected:
 	void showEvent(QShowEvent *event) override;
@@ -50,7 +55,9 @@ private:
 	QPushButton *windowButton = nullptr;
 	QPushButton *fullScreenButton = nullptr;
 	QPushButton *recordButton = nullptr;
+	QCheckBox *matchCanvasCheck = nullptr;
 	QLabel *hintLabel = nullptr;
+	SnipOutline *outline = nullptr;
 
 	SnipSelection::Mode mode = SnipSelection::Mode::Region;
 
@@ -59,6 +66,8 @@ private:
 	QPoint dragStart;
 	QPoint dragCurrent;
 	QRect regionRect;
+	// Last confirmed region; pre-selected when the picker reopens.
+	QRect lastRegion;
 
 	// Window mode state. windowValue/windowPhysicalRect are captured
 	// when the window is clicked.

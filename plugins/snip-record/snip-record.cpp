@@ -68,6 +68,7 @@ void TogglePickerOrStop()
 		blog(LOG_INFO, "[snip-record] Stopping recording via hotkey/menu");
 		obs_frontend_recording_stop();
 	} else {
+		recorder.RestoreCanvasIfPending();
 		picker->OpenPicker();
 	}
 }
@@ -87,6 +88,22 @@ void FrontendEvent(enum obs_frontend_event event, void *)
 		recorder.HandleRecordingStopped();
 	} else if (event == OBS_FRONTEND_EVENT_FINISHED_LOADING || event == OBS_FRONTEND_EVENT_PROFILE_CHANGED) {
 		LoadHotkeyBinding();
+		// Undo a canvas resize left behind by a crash mid-snip.
+		recorder.RestoreCanvasIfPending();
+	}
+}
+
+void SaveSettings(obs_data_t *save_data, bool saving, void *)
+{
+	if (saving) {
+		OBSDataAutoRelease obj = obs_data_create();
+		obs_data_set_bool(obj, "matchCanvas", recorder.MatchCanvas());
+		obs_data_set_obj(save_data, "snip-record", obj);
+	} else {
+		OBSDataAutoRelease obj = obs_data_get_obj(save_data, "snip-record");
+		if (obj && picker) {
+			picker->SetMatchCanvasChecked(obs_data_get_bool(obj, "matchCanvas"));
+		}
 	}
 }
 
@@ -107,6 +124,7 @@ bool obs_module_load(void)
 	toggleHotkey = obs_hotkey_register_frontend(kHotkeyName, obs_module_text("SnipRecord.Hotkey.Toggle"),
 						    HotkeyPressed, nullptr);
 	obs_frontend_add_event_callback(FrontendEvent, nullptr);
+	obs_frontend_add_save_callback(SaveSettings, nullptr);
 
 	blog(LOG_INFO, "[snip-record] Loaded. Bind '%s' under Settings > Hotkeys, or use Tools > %s.",
 	     obs_module_text("SnipRecord.Hotkey.Toggle"), obs_module_text("SnipRecord.Menu.Open"));
@@ -115,6 +133,7 @@ bool obs_module_load(void)
 
 void obs_module_unload(void)
 {
+	obs_frontend_remove_save_callback(SaveSettings, nullptr);
 	obs_frontend_remove_event_callback(FrontendEvent, nullptr);
 	if (toggleHotkey != OBS_INVALID_HOTKEY_ID) {
 		obs_hotkey_unregister(toggleHotkey);

@@ -31,12 +31,27 @@ switched back to the scene you were on before.
 Nothing about your existing scenes, sources, or profile is modified —
 the only footprint is the extra `Snip Record` scene.
 
+While a region recording runs, a thin red outline marks the recorded
+area on screen (excluded from the capture itself). The last region is
+remembered and pre-selected the next time the picker opens.
+
+## Optional: match canvas to selection
+
+The picker's **Match canvas to selection** checkbox temporarily resizes
+the OBS canvas (base and output) to the picked area — rounded down to
+even dimensions, minimum 32×32 — so the file comes out at exactly the
+selection's size. The original canvas size is restored when the
+recording stops; it is saved to the profile *before* resizing, so even
+a crash mid-recording is undone on the next OBS start. It is skipped
+while streaming. Leave it off if you don't want your global video
+settings touched; it is off by default.
+
 ## Notes and limitations
 
 - Windows only (it builds on `win-capture` and Win32 window picking).
-- Output resolution is your OBS canvas size: the picked area is scaled
-  to fit the canvas without distortion, not rendered at native size.
-  Set your canvas to the size you want before a snip if that matters.
+- Without "Match canvas", output resolution is your OBS canvas size:
+  the picked area is scaled to fit the canvas without distortion, not
+  rendered at native size.
 - A region dragged across two displays is clamped to the display it
   ends on.
 - While OBS is already recording something else, the picker opens but

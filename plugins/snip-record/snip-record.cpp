@@ -9,11 +9,15 @@
 #include <QFileInfo>
 #include <QMainWindow>
 #include <QObject>
+#include <QProcess>
 #include <QStandardPaths>
 #include <QTimer>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <functional>
+#include <thread>
 #include <vector>
 
 #ifdef _WIN32
@@ -24,6 +28,7 @@
 #include <shellapi.h>
 #endif
 
+#include "snip-exporter.hpp"
 #include "snip-hotkey.hpp"
 #include "snip-launcher.hpp"
 #include "snip-picker.hpp"
@@ -339,6 +344,101 @@ void DoPostRecordingAction()
 #endif
 }
 
+std::atomic<bool> exportBusy{false};
+
+void PostExportStatus(const QString &text)
+{
+	QMetaObject::invokeMethod(QCoreApplication::instance(), [text] {
+		if (launcher) {
+			launcher->SetExportStatus(text);
+		}
+	});
+}
+
+// Converts a finished snip MP4 to the picker's chosen animated
+// format, in the background. The MP4 is always kept as the master.
+void MaybeStartExport(const QString &mp4Path, int format)
+{
+	if (format == 0 || mp4Path.isEmpty()) {
+		return;
+	}
+	if (exportBusy.exchange(true)) {
+		blog(LOG_WARNING, "[snip-record] Export already running; skipping this one");
+		return;
+	}
+
+	const QFileInfo info(mp4Path);
+	const QString extension = format == 1 ? ".gif" : ".webp";
+	const QString outPath = info.dir().filePath(info.completeBaseName() + extension);
+	PostExportStatus(QString(obs_module_text("SnipRecord.Export.Converting")).arg(extension.mid(1).toUpper()));
+	blog(LOG_INFO, "[snip-record] Exporting %s -> %s", mp4Path.toUtf8().constData(),
+	     outPath.toUtf8().constData());
+
+	std::thread([mp4Path, outPath, format] {
+		// The output file can still be flushing right after
+		// RECORDING_STOPPED; wait for its size to settle.
+		QFileInfo check(mp4Path);
+		qint64 lastSize = -1;
+		for (int i = 0; i < 30; i++) {
+			check.refresh();
+			if (check.size() > 0 && check.size() == lastSize) {
+				break;
+			}
+			lastSize = check.size();
+			std::this_thread::sleep_for(std::chrono::milliseconds(400));
+		}
+
+		bool ok = false;
+		std::string error;
+		const std::string inUtf8 = mp4Path.toUtf8().constData();
+		const std::string outUtf8 = outPath.toUtf8().constData();
+		if (format == 1) {
+			// Prefer gifski when the user has it (better
+			// quality); fall back to the built-in converter.
+			const QString gifski = QStandardPaths::findExecutable("gifski");
+			if (!gifski.isEmpty()) {
+				const int rc = QProcess::execute(gifski,
+								 {"--fps", "15", "--width", "960", "--output", outPath,
+								  mp4Path});
+				ok = rc == 0 && QFileInfo::exists(outPath);
+				if (!ok) {
+					blog(LOG_WARNING, "[snip-record] gifski failed (%d); using built-in GIF export",
+					     rc);
+				}
+			}
+			if (!ok) {
+				ok = snip::ConvertToGif(inUtf8, outUtf8, {}, error);
+			}
+		} else {
+			// OBS's FFmpeg has no WebP encoder, so WebP goes
+			// through a user-installed ffmpeg.
+			const QString ffmpeg = QStandardPaths::findExecutable("ffmpeg");
+			if (ffmpeg.isEmpty()) {
+				error = "WebP export needs ffmpeg on PATH (or pick GIF)";
+			} else {
+				const int rc = QProcess::execute(
+					ffmpeg, {"-y", "-i", mp4Path, "-vf", "fps=30,scale=min(1280\\,iw):-2", "-c:v",
+						 "libwebp_anim", "-quality", "80", "-loop", "0", outPath});
+				ok = rc == 0 && QFileInfo::exists(outPath);
+				if (!ok) {
+					error = "ffmpeg WebP conversion failed (libwebp missing?)";
+				}
+			}
+		}
+
+		exportBusy = false;
+		if (ok) {
+			blog(LOG_INFO, "[snip-record] Export finished: %s", outUtf8.c_str());
+			PostExportStatus(QString(obs_module_text("SnipRecord.Export.Done"))
+						 .arg(QFileInfo(outPath).fileName()));
+		} else {
+			blog(LOG_WARNING, "[snip-record] Export failed: %s", error.c_str());
+			PostExportStatus(QString(obs_module_text("SnipRecord.Export.Failed"))
+						 .arg(QString::fromStdString(error)));
+		}
+	}).detach();
+}
+
 void FrontendEvent(enum obs_frontend_event event, void *)
 {
 	if (event == OBS_FRONTEND_EVENT_RECORDING_STARTED) {
@@ -355,6 +455,12 @@ void FrontendEvent(enum obs_frontend_event event, void *)
 		const bool wasSnipRecording = recorder.IsActive();
 		recorder.HandleRecordingStopped();
 		if (wasSnipRecording) {
+			// Optional animated export (waits for the file
+			// to settle itself), alongside the post action.
+			char *rawRecording = obs_frontend_get_last_recording();
+			const QString recordingPath = rawRecording ? QString::fromUtf8(rawRecording) : QString();
+			bfree(rawRecording);
+			MaybeStartExport(recordingPath, picker ? picker->ExportFormat() : 0);
 			// Brief delay so the output file is fully closed.
 			QTimer::singleShot(500, QCoreApplication::instance(), [] { DoPostRecordingAction(); });
 		}
@@ -385,6 +491,7 @@ void SaveSettings(obs_data_t *save_data, bool saving, void *)
 		obs_data_set_bool(obj, "desktopAudio", picker ? picker->DesktopAudio() : true);
 		obs_data_set_bool(obj, "micAudio", picker ? picker->MicAudio() : true);
 		obs_data_set_bool(obj, "captureCursor", picker ? picker->CaptureCursor() : true);
+		obs_data_set_int(obj, "exportFormat", picker ? picker->ExportFormat() : 1);
 		obs_data_set_obj(save_data, "snip-record", obj);
 	} else {
 		OBSDataAutoRelease obj = obs_data_get_obj(save_data, "snip-record");
@@ -408,6 +515,10 @@ void SaveSettings(obs_data_t *save_data, bool saving, void *)
 				};
 				picker->SetCaptureOptions(savedOr("desktopAudio", true), savedOr("micAudio", true),
 							  savedOr("captureCursor", true));
+				// GIF export is the default for new installs.
+				picker->SetExportFormat(obs_data_has_user_value(obj, "exportFormat")
+								? int(obs_data_get_int(obj, "exportFormat"))
+								: 1);
 			}
 		}
 	}

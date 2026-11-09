@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.28...3.30)
 
 find_package(Qt6 REQUIRED Widgets)
+find_package(FFmpeg REQUIRED avcodec avfilter avformat avutil)
 
 add_library(snip-record MODULE)
 add_library(OBS::snip-record ALIAS snip-record)
@@ -8,6 +9,8 @@ add_library(OBS::snip-record ALIAS snip-record)
 target_sources(
   snip-record
   PRIVATE snip-record.cpp
+          snip-exporter.cpp
+          snip-exporter.hpp
           snip-launcher.cpp
           snip-launcher.hpp
           snip-hotkey.hpp
@@ -21,7 +24,10 @@ target_sources(
           snip-selection.hpp
 )
 
-target_link_libraries(snip-record PRIVATE OBS::frontend-api OBS::libobs Qt::Widgets)
+target_link_libraries(
+  snip-record PRIVATE OBS::frontend-api OBS::libobs Qt::Widgets FFmpeg::avcodec FFmpeg::avfilter FFmpeg::avformat
+                      FFmpeg::avutil
+)
 
 if(OS_WINDOWS)
   target_link_libraries(snip-record PRIVATE dwmapi shell32 user32)

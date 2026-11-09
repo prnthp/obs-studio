@@ -129,6 +129,9 @@ SnipLauncher::SnipLauncher(std::function<void()> onStartSnip_,
 
 	statusLabel = new QLabel(this);
 	statusLabel->setStyleSheet("color: #888;");
+	exportLabel = new QLabel(this);
+	exportLabel->setStyleSheet("color: #6aa84f;");
+	exportLabel->hide();
 
 	auto *shortcutLabel = new QLabel(obs_module_text("SnipRecord.Launcher.Shortcut"), this);
 	shortcutEdit = new QKeySequenceEdit(this);
@@ -152,6 +155,7 @@ SnipLauncher::SnipLauncher(std::function<void()> onStartSnip_,
 	layout->addWidget(folderButton);
 	layout->addWidget(fullUiButton);
 	layout->addWidget(statusLabel);
+	layout->addWidget(exportLabel);
 	layout->addSpacing(8);
 	layout->addWidget(shortcutLabel);
 	layout->addWidget(shortcutEdit);
@@ -176,6 +180,12 @@ SnipLauncher::SnipLauncher(std::function<void()> onStartSnip_,
 	connect(refreshTimer, &QTimer::timeout, this, &SnipLauncher::RefreshState);
 	refreshTimer->start();
 	RefreshState();
+}
+
+void SnipLauncher::SetExportStatus(const QString &text)
+{
+	exportLabel->setText(text);
+	exportLabel->setVisible(!text.isEmpty());
 }
 
 void SnipLauncher::Show()

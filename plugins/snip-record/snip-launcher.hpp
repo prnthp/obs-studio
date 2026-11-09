@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QString>
 #include <QWidget>
 
 #include <functional>
@@ -28,6 +29,8 @@ public:
 
 	void Show();
 	bool ShowAtStartup() const;
+	// Progress/result line for the background GIF/WebP export.
+	void SetExportStatus(const QString &text);
 
 protected:
 	void closeEvent(QCloseEvent *event) override;
@@ -44,6 +47,7 @@ private:
 
 	QPushButton *startButton = nullptr;
 	QLabel *statusLabel = nullptr;
+	QLabel *exportLabel = nullptr;
 	QKeySequenceEdit *shortcutEdit = nullptr;
 	QLabel *shortcutHint = nullptr;
 	QCheckBox *trayStopCheck = nullptr;

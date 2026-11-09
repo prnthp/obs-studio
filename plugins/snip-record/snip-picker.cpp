@@ -316,12 +316,28 @@ SnipPicker::SnipPicker(SnipRecorder *recorder_, QWidget *parent) : QWidget(paren
 	postActionRow->addWidget(postActionCombo);
 	postActionRow->addStretch();
 
+	auto *exportLabel = new QLabel(obs_module_text("SnipRecord.Picker.Export"), toolbar);
+	exportLabel->setStyleSheet("color: #ddd; padding: 2px 6px;");
+	exportCombo = new QComboBox(toolbar);
+	exportCombo->setFocusPolicy(Qt::NoFocus);
+	exportCombo->addItem(obs_module_text("SnipRecord.Picker.Export.None"));
+	exportCombo->addItem(obs_module_text("SnipRecord.Picker.Export.Gif"));
+	exportCombo->addItem(obs_module_text("SnipRecord.Picker.Export.WebP"));
+	exportCombo->setCurrentIndex(1); // GIF by default; a saved setting may override
+
+	auto *exportRow = new QHBoxLayout;
+	exportRow->setContentsMargins(6, 0, 6, 0);
+	exportRow->addWidget(exportLabel);
+	exportRow->addWidget(exportCombo);
+	exportRow->addStretch();
+
 	auto *toolbarLayout = new QVBoxLayout(toolbar);
 	toolbarLayout->setContentsMargins(0, 0, 0, 6);
 	toolbarLayout->addLayout(buttonsRow);
 	toolbarLayout->addLayout(optionsRow);
 	toolbarLayout->addLayout(captureRow);
 	toolbarLayout->addLayout(postActionRow);
+	toolbarLayout->addLayout(exportRow);
 	toolbarLayout->addWidget(hintLabel);
 
 	connect(regionButton, &QPushButton::clicked, this, [this] { SetMode(SnipSelection::Mode::Region); });
@@ -347,6 +363,7 @@ SnipPicker::SnipPicker(SnipRecorder *recorder_, QWidget *parent) : QWidget(paren
 		obs_frontend_save();
 	});
 	connect(postActionCombo, &QComboBox::currentIndexChanged, this, [](int) { obs_frontend_save(); });
+	connect(exportCombo, &QComboBox::currentIndexChanged, this, [](int) { obs_frontend_save(); });
 
 	outline = new SnipOutline();
 
@@ -414,6 +431,17 @@ void SnipPicker::SetCaptureOptions(bool desktopAudio, bool micAudio, bool cursor
 	recorder->SetRecordDesktopAudio(desktopAudio);
 	recorder->SetRecordMicAudio(micAudio);
 	recorder->SetCaptureCursor(cursor);
+}
+
+int SnipPicker::ExportFormat() const
+{
+	return exportCombo->currentIndex();
+}
+
+void SnipPicker::SetExportFormat(int format)
+{
+	const QSignalBlocker blocker(exportCombo);
+	exportCombo->setCurrentIndex(std::clamp(format, 0, exportCombo->count() - 1));
 }
 
 void SnipPicker::MaybeInstantStart()

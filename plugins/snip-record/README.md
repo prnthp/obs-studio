@@ -23,6 +23,14 @@ pointer** checkboxes. Unchecking audio detaches OBS's global audio
 devices (desktop channels 1-2, mic channels 3-6) for that snip only;
 they are restored when the recording stops.
 
+**Also export** (picker, GIF by default) converts each finished MP4
+in the background - the MP4 is always kept as the master. GIF uses
+the FFmpeg libraries OBS ships (decode, palette generation, encode;
+capped at 960 px wide / 15 fps), or gifski when found on PATH. WebP
+goes through a user-installed ffmpeg with libwebp, since OBS's
+FFmpeg build has no WebP encoder. The launcher window shows export
+progress/results.
+
 ## Usage
 
 1. Bind the hotkey: **Settings → Hotkeys → "Snip Record: open picker /

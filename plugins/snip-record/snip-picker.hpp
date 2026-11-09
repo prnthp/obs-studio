@@ -47,6 +47,11 @@ public:
 	bool CaptureCursor() const;
 	void SetCaptureOptions(bool desktopAudio, bool micAudio, bool cursor);
 
+	// Optional animated export converted from the MP4 after each
+	// snip: 0 = none, 1 = GIF, 2 = WebP (external ffmpeg required).
+	int ExportFormat() const;
+	void SetExportFormat(int format);
+
 protected:
 	void showEvent(QShowEvent *event) override;
 	void hideEvent(QHideEvent *event) override;
@@ -82,6 +87,7 @@ private:
 	QCheckBox *desktopAudioCheck = nullptr;
 	QCheckBox *micAudioCheck = nullptr;
 	QCheckBox *cursorCheck = nullptr;
+	QComboBox *exportCombo = nullptr;
 	QComboBox *postActionCombo = nullptr;
 	QLabel *hintLabel = nullptr;
 	SnipOutline *outline = nullptr;

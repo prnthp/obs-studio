@@ -84,7 +84,15 @@ your global video settings touched, and that choice is remembered.
 
 ## Notes and limitations
 
-- Windows only (it builds on `win-capture` and Win32 window picking).
+- Windows and macOS 13+. On Windows it builds on `win-capture` and
+  Win32 window picking; on macOS on the ScreenCaptureKit
+  `screen_capture` source in `mac-capture` (window picking via
+  `CGWindowList`, displays via `display_uuid`, the recording outline
+  excluded with `NSWindowSharingNone`). macOS requires Screen
+  Recording permission for OBS (System Settings → Privacy &
+  Security → Screen Recording); without it window titles are empty
+  and captures stay black. There is no `.iss` installer on macOS —
+  the plugin ships inside the normal OBS `.app`/DMG.
 - Without "Match canvas", output resolution is your OBS canvas size:
   the picked area is scaled to fit the canvas without distortion, not
   rendered at native size.

@@ -11,6 +11,11 @@
 #include <Windows.h>
 #include <dwmapi.h>
 #endif
+#ifdef __APPLE__
+#include "snip-platform-mac.hpp"
+
+#include <cstdint>
+#endif
 
 SnipOutline::SnipOutline(QWidget *parent) : QWidget(parent)
 {
@@ -35,6 +40,8 @@ void SnipOutline::ShowFor(const QRect &globalLogicalRect)
 #ifdef _WIN32
 	// Windows 10 2004+: keep this window out of any capture entirely.
 	SetWindowDisplayAffinity(reinterpret_cast<HWND>(winId()), WDA_EXCLUDEFROMCAPTURE);
+#elif defined(__APPLE__)
+	snip_mac::ConfigureOutlineWindow(this);
 #endif
 
 	timer.start();
@@ -48,6 +55,8 @@ void SnipOutline::ShowForWindow(void *windowHandle, unsigned long processId)
 
 #ifdef _WIN32
 	SetWindowDisplayAffinity(reinterpret_cast<HWND>(winId()), WDA_EXCLUDEFROMCAPTURE);
+#elif defined(__APPLE__)
+	snip_mac::ConfigureOutlineWindow(this);
 #endif
 
 	UpdateFollowRect();
@@ -97,6 +106,19 @@ void SnipOutline::UpdateFollowRect()
 	// reports off-screen coordinates, which parks the border too.)
 	SetWindowPos(reinterpret_cast<HWND>(winId()), HWND_TOPMOST, rect.left - 2, rect.top - 2,
 		     (rect.right - rect.left) + 4, (rect.bottom - rect.top) + 4, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+#elif defined(__APPLE__)
+	// followWindow carries a CGWindowID (see the picker).
+	const uint32_t windowId = (uint32_t)(uintptr_t)followWindow;
+	QRect bounds;
+	unsigned long pid = 0;
+	if (windowId == 0 || !snip_mac::WindowBounds(windowId, bounds, &pid) || pid != followProcessId ||
+	    !obs_frontend_recording_active()) {
+		hide();
+		return;
+	}
+	// CGWindow bounds and Qt global geometry share points/top-left.
+	setGeometry(bounds.adjusted(-2, -2, 2, 2));
+	raise();
 #else
 	hide();
 #endif

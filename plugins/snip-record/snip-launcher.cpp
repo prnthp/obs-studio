@@ -135,6 +135,10 @@ SnipLauncher::SnipLauncher(std::function<void()> onStartSnip_,
 
 	auto *shortcutLabel = new QLabel(obs_module_text("SnipRecord.Launcher.Shortcut"), this);
 	shortcutEdit = new QKeySequenceEdit(this);
+	// Click-to-edit only: with the default focus policy this field
+	// takes keyboard focus as soon as the window is activated, and
+	// every key the user then presses rewrites the shortcut.
+	shortcutEdit->setFocusPolicy(Qt::ClickFocus);
 	shortcutEdit->setKeySequence(QKeySequence(QString::fromStdString(shortcutDisplay())));
 	shortcutHint = new QLabel(this);
 	shortcutHint->setStyleSheet("color: #a33;");
@@ -194,6 +198,8 @@ void SnipLauncher::Show()
 	show();
 	raise();
 	activateWindow();
+	// Keep key presses aimed at the window, not the shortcut field.
+	startButton->setFocus(Qt::OtherFocusReason);
 }
 
 bool SnipLauncher::ShowAtStartup() const
@@ -223,6 +229,7 @@ void SnipLauncher::RefreshState()
 
 void SnipLauncher::ApplyShortcutEdit()
 {
+	shortcutEdit->clearFocus();
 	const QKeySequence sequence = shortcutEdit->keySequence();
 	shortcutHint->hide();
 	if (sequence.isEmpty()) {

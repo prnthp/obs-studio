@@ -102,6 +102,14 @@ obs_source_t *SnipRecorder::CreateCaptureSource(const SnipSelection &selection)
 
 	switch (selection.mode) {
 	case SnipSelection::Mode::Window:
+#ifdef __APPLE__
+		// ScreenCaptureKit source in mac-capture (macOS 13+).
+		sourceId = "screen_capture";
+		obs_data_set_int(settings, "type", 1); // WindowCapture
+		obs_data_set_int(settings, "window", (long long)selection.windowId);
+		obs_data_set_bool(settings, "show_cursor", captureCursor);
+		obs_data_set_bool(settings, "show_empty_names", true);
+#else
 		sourceId = "window_capture";
 		// Explicit WGC ("Modern"): with Automatic the source can
 		// fall back to BitBlt, which drops the title bar. The
@@ -113,12 +121,20 @@ obs_source_t *SnipRecorder::CreateCaptureSource(const SnipSelection &selection)
 		// Explicit false: the source default is client-area only,
 		// which drops the title bar. Capture the whole window.
 		obs_data_set_bool(settings, "client_area", false);
+#endif
 		break;
 	case SnipSelection::Mode::Region:
 	case SnipSelection::Mode::FullScreen:
+#ifdef __APPLE__
+		sourceId = "screen_capture";
+		obs_data_set_int(settings, "type", 0); // DisplayCapture
+		obs_data_set_string(settings, "display_uuid", selection.monitorId.c_str());
+		obs_data_set_bool(settings, "show_cursor", captureCursor);
+#else
 		sourceId = "monitor_capture";
 		obs_data_set_string(settings, "monitor_id", selection.monitorId.c_str());
 		obs_data_set_bool(settings, "capture_cursor", captureCursor);
+#endif
 		break;
 	}
 
@@ -134,7 +150,7 @@ obs_source_t *SnipRecorder::CreateCaptureSource(const SnipSelection &selection)
 	}
 	obs_source_t *source = obs_source_create(sourceId, name.c_str(), settings, nullptr);
 	if (!source) {
-		blog(LOG_ERROR, "[snip-record] Failed to create capture source '%s' (is win-capture loaded?)",
+		blog(LOG_ERROR, "[snip-record] Failed to create capture source '%s' (is the capture plugin loaded?)",
 		     sourceId);
 	}
 	return source;
@@ -263,6 +279,12 @@ bool SnipRecorder::StartRecording(const SnipSelection &selection)
 		blog(LOG_ERROR, "[snip-record] Not starting: no window selected");
 		return false;
 	}
+#ifdef __APPLE__
+	if (selection.mode == SnipSelection::Mode::Window && selection.windowId == 0) {
+		blog(LOG_ERROR, "[snip-record] Not starting: no window selected");
+		return false;
+	}
+#endif
 
 	OBSSourceAutoRelease sceneSource = FindOrCreateScene();
 	if (!sceneSource) {
@@ -312,11 +334,17 @@ bool SnipRecorder::StartRecording(const SnipSelection &selection)
 	blog(LOG_INFO, "[snip-record] Starting recording (mode=%d, %dx%d)", int(selection.mode), selection.rect.width,
 	     selection.rect.height);
 	if (selection.mode == SnipSelection::Mode::Window) {
+#ifdef _WIN32
 		// window_capture only starts producing frames once it has
 		// found and hooked its window (~1 s search + WGC session
 		// spin-up). Recording immediately would bake that dead
 		// time into the head of the video, so wait for the hook.
 		DeferStartUntilHooked(capture);
+#else
+		// The SCK source has no "hooked" signal; it delivers
+		// frames as soon as its stream starts.
+		obs_frontend_recording_start();
+#endif
 	} else {
 		obs_frontend_recording_start();
 	}

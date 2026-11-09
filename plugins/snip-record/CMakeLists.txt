@@ -34,6 +34,12 @@ if(OS_WINDOWS)
   configure_file(cmake/windows/obs-module.rc.in snip-record.rc)
   target_sources(snip-record PRIVATE snip-record.rc)
   set_property(TARGET snip-record APPEND PROPERTY AUTORCC_OPTIONS --format-version 1)
+elseif(OS_MACOS)
+  target_sources(snip-record PRIVATE snip-platform-mac.hpp snip-platform-mac.mm)
+  target_link_libraries(
+    snip-record PRIVATE "$<LINK_LIBRARY:FRAMEWORK,Cocoa.framework>" "$<LINK_LIBRARY:FRAMEWORK,CoreGraphics.framework>"
+                        "$<LINK_LIBRARY:FRAMEWORK,CoreFoundation.framework>"
+  )
 endif()
 
 set_target_properties_obs(snip-record PROPERTIES FOLDER plugins PREFIX "" AUTOMOC ON)

@@ -66,6 +66,23 @@ int main()
 	CHECK(!IsUsable({0, 0, 7, 8}));
 	CHECK(!IsUsable({0, 0, 100, 0}));
 
+	// Toolbar placement inside a screen's available geometry (which
+	// excludes the macOS menu bar / Dock and Windows taskbar). Two
+	// displays side by side; the toolbar must sit top-centre of the
+	// screen it is shown on, below the menu bar, never centred on
+	// the seam of the virtual desktop (regression: occluded buttons
+	// on dual-monitor macOS).
+	Rect availBuiltIn = {0, 34, 1710, 1073};     // primary, menu bar 34
+	Rect availExternal = {-1862, 57, 1862, 1050}; // left display + Dock
+	Rect placed = PlaceTopCentered(availBuiltIn, 600, 240, 12);
+	CHECK(placed.x == 555 && placed.y == 46 && placed.width == 600);
+	placed = PlaceTopCentered(availExternal, 600, 240, 12);
+	CHECK(placed.x == -1862 + 631 && placed.y == 69);
+	// Wider than the screen: pinned to its left edge, never negative
+	// relative to that screen, and still below the menu bar.
+	placed = PlaceTopCentered(availBuiltIn, 2000, 240, 12);
+	CHECK(placed.x == 0 && placed.y == 46);
+
 	if (failures == 0) {
 		std::printf("ALL GEOMETRY TESTS PASSED\n");
 	}

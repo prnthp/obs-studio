@@ -5,6 +5,7 @@
 
 #include <QAction>
 #include <QCoreApplication>
+#include <QDesktopServices>
 #include <QDir>
 #include <QFileInfo>
 #include <QMainWindow>
@@ -12,6 +13,7 @@
 #include <QProcess>
 #include <QStandardPaths>
 #include <QTimer>
+#include <QUrl>
 
 #include <algorithm>
 #include <atomic>
@@ -341,6 +343,13 @@ void DoPostRecordingAction()
 		}
 	}
 	WatchForNewWindow(before, 16);
+#elif defined(__APPLE__)
+	if (action == 1) {
+		QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+	} else if (action == 2) {
+		// Reveal in Finder (the Explorer "/select," equivalent).
+		QProcess::startDetached(QStringLiteral("open"), {QStringLiteral("-R"), path});
+	}
 #endif
 }
 
@@ -529,9 +538,13 @@ void SaveSettings(obs_data_t *save_data, bool saving, void *)
 bool obs_module_load(void)
 {
 	obs_frontend_push_ui_translation(obs_module_get_string);
-	QMainWindow *mainWindow = static_cast<QMainWindow *>(obs_frontend_get_main_window());
-	picker = new SnipPicker(&recorder, mainWindow);
-	launcher = new SnipLauncher([] { TogglePickerOrStop(); }, ApplyHotkeyJson, CurrentShortcutDisplay, mainWindow);
+	// No Qt parent: both are top-level windows owned by this module.
+	// Parenting them to the main window makes Qt delete them when
+	// the main window is destroyed, which happens before
+	// obs_module_unload() runs -- deleting them again there then
+	// crashes on exit (macOS). obs_module_unload() deletes them.
+	picker = new SnipPicker(&recorder, nullptr);
+	launcher = new SnipLauncher([] { TogglePickerOrStop(); }, ApplyHotkeyJson, CurrentShortcutDisplay, nullptr);
 
 	// Set installation defaults before the frontend reads the tray
 	// options while creating the main window.

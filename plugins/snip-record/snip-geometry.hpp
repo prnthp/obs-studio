@@ -70,6 +70,22 @@ inline Rect MapRect(const Rect &rect, const Rect &fromSpace, const Rect &toSpace
 	return result;
 }
 
+// Placement for a floating toolbar of `width`x`height` at the top
+// centre of `area` (a screen's available geometry, which already
+// excludes the menu bar / Dock / taskbar), `margin` below its top.
+// Centring on one screen's available area -- never on the whole
+// virtual desktop, whose centre can be the seam between displays
+// and whose top can be under a menu bar.
+inline Rect PlaceTopCentered(const Rect &area, int width, int height, int margin)
+{
+	Rect result;
+	result.x = area.x + std::max(0, (area.width - width) / 2);
+	result.y = area.y + margin;
+	result.width = width;
+	result.height = height;
+	return result;
+}
+
 // Crop (in capture-source pixels) that keeps only `selection` out of a
 // full-display capture of `monitor`. The selection is clamped to the
 // monitor first, so a region dragged across displays records the part on

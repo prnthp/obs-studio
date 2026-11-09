@@ -7,6 +7,7 @@
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QCursor>
 #include <QFontMetrics>
 #include <QGuiApplication>
 #include <QHBoxLayout>
@@ -21,6 +22,9 @@
 
 #include "snip-outline.hpp"
 #include "snip-recorder.hpp"
+#ifdef __APPLE__
+#include "snip-platform-mac.hpp"
+#endif
 
 #include <iterator>
 #include <string>
@@ -34,6 +38,54 @@
 #include <Windows.h>
 #include <dwmapi.h>
 #endif
+
+// One overlay window for a single additional display (macOS).
+// Painting and mouse handling are the picker's, in global logical
+// pixels; this window only covers its own display and forwards.
+class SnipScreenOverlay : public QWidget {
+public:
+	SnipScreenOverlay(SnipPicker *picker_, const QRect &screenGeometry) : QWidget(nullptr), picker(picker_)
+	{
+		setWindowFlags(Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint | Qt::Tool);
+		setAttribute(Qt::WA_TranslucentBackground);
+		setAttribute(Qt::WA_ShowWithoutActivating);
+		setMouseTracking(true);
+		setFocusPolicy(Qt::NoFocus);
+		setGeometry(screenGeometry);
+	}
+
+protected:
+	void paintEvent(QPaintEvent *) override
+	{
+		QPainter painter(this);
+		picker->PaintSelection(painter, rect(), geometry().topLeft());
+	}
+	void mousePressEvent(QMouseEvent *event) override
+	{
+		if (event->button() == Qt::LeftButton) {
+			picker->HandleMousePress(event->globalPosition().toPoint());
+		}
+	}
+	void mouseMoveEvent(QMouseEvent *event) override
+	{
+		picker->HandleMouseMove(event->globalPosition().toPoint());
+	}
+	void mouseReleaseEvent(QMouseEvent *event) override
+	{
+		if (event->button() == Qt::LeftButton) {
+			picker->HandleMouseRelease(event->globalPosition().toPoint());
+		}
+	}
+	void mouseDoubleClickEvent(QMouseEvent *event) override
+	{
+		if (event->button() == Qt::LeftButton) {
+			picker->HandleMouseDoubleClick(event->globalPosition().toPoint());
+		}
+	}
+
+private:
+	SnipPicker *picker;
+};
 
 namespace {
 
@@ -365,7 +417,7 @@ SnipPicker::SnipPicker(SnipRecorder *recorder_, QWidget *parent) : QWidget(paren
 	connect(postActionCombo, &QComboBox::currentIndexChanged, this, [](int) { obs_frontend_save(); });
 	connect(exportCombo, &QComboBox::currentIndexChanged, this, [](int) { obs_frontend_save(); });
 
-	outline = new SnipOutline();
+	outline = new SnipOutline(this);
 
 	SetMode(SnipSelection::Mode::Region);
 }
@@ -460,19 +512,84 @@ void SnipPicker::OpenPicker()
 	hasSelectedWindow = false;
 
 	QScreen *primary = QGuiApplication::primaryScreen();
+	QScreen *activeScreen = QGuiApplication::screenAt(QCursor::pos());
+	if (!activeScreen) {
+		activeScreen = primary;
+	}
+
+#ifdef __APPLE__
+	// Cover only the display the user is on; CreateScreenOverlays
+	// adds one window per remaining display. A single window over
+	// the virtual desktop does not get events on every display.
+	setGeometry(activeScreen ? activeScreen->geometry() : QRect(0, 0, 1920, 1080));
+	fullScreenRect = geometry();
+#else
 	setGeometry(primary ? primary->virtualGeometry() : QRect(0, 0, 1920, 1080));
 	fullScreenRect = primary ? primary->geometry() : geometry();
+#endif
 
 	toolbar->adjustSize();
+#ifdef __APPLE__
+	// Top centre of the active screen's *available* geometry, so
+	// the toolbar is below the menu bar and clear of the Dock.
+	if (activeScreen) {
+		const snip::Rect placed = snip::PlaceTopCentered(ToSnipRect(activeScreen->availableGeometry()),
+								 toolbar->width(), toolbar->height(), 12);
+		toolbar->move(placed.x - geometry().x(), placed.y - geometry().y());
+	}
+#else
 	const int toolbarX = geometry().width() / 2 - toolbar->width() / 2;
 	toolbar->move(std::max(0, toolbarX), 16);
+#endif
 
 	SetMode(mode);
 	UpdateToolbar();
 	show();
+#ifdef __APPLE__
+	CreateScreenOverlays(activeScreen);
+#endif
 	raise();
 	activateWindow();
 	setFocus(Qt::ActiveWindowFocusReason);
+}
+
+void SnipPicker::CreateScreenOverlays(QScreen *pickerScreen)
+{
+#ifdef __APPLE__
+	HideScreenOverlays();
+	for (QWidget *overlay : screenOverlays) {
+		delete overlay;
+	}
+	screenOverlays.clear();
+
+	for (QScreen *screen : QGuiApplication::screens()) {
+		if (!screen || screen == pickerScreen) {
+			continue;
+		}
+		auto *overlay = new SnipScreenOverlay(this, screen->geometry());
+		overlay->setCursor(cursor());
+		screenOverlays.push_back(overlay);
+		if (isVisible()) {
+			overlay->show();
+		}
+	}
+#else
+	(void)pickerScreen;
+#endif
+}
+
+void SnipPicker::HideScreenOverlays()
+{
+	for (QWidget *overlay : screenOverlays) {
+		overlay->hide();
+	}
+}
+
+void SnipPicker::RefreshOverlays()
+{
+	for (QWidget *overlay : screenOverlays) {
+		overlay->update();
+	}
 }
 
 // The picker is a topmost tool window and may not hold keyboard focus
@@ -488,6 +605,7 @@ void SnipPicker::showEvent(QShowEvent *event)
 void SnipPicker::hideEvent(QHideEvent *event)
 {
 	releaseKeyboard();
+	HideScreenOverlays();
 	QWidget::hideEvent(event);
 }
 
@@ -498,8 +616,12 @@ void SnipPicker::SetMode(SnipSelection::Mode newMode)
 	windowButton->setChecked(mode == SnipSelection::Mode::Window);
 	fullScreenButton->setChecked(mode == SnipSelection::Mode::FullScreen);
 	setCursor(mode == SnipSelection::Mode::Region ? Qt::CrossCursor : Qt::ArrowCursor);
+	for (QWidget *overlay : screenOverlays) {
+		overlay->setCursor(cursor());
+	}
 	UpdateToolbar();
 	update();
+	RefreshOverlays();
 }
 
 bool SnipPicker::CanRecord() const
@@ -556,16 +678,20 @@ QRect SnipPicker::ActiveRect() const
 void SnipPicker::paintEvent(QPaintEvent *)
 {
 	QPainter painter(this);
-	painter.fillRect(rect(), QColor(0, 0, 0, 110));
+	PaintSelection(painter, rect(), geometry().topLeft());
+}
+
+void SnipPicker::PaintSelection(QPainter &painter, const QRect &widgetRect, const QPoint &origin)
+{
+	painter.fillRect(widgetRect, QColor(0, 0, 0, 110));
 
 	const QRect active = ActiveRect();
 	if (!active.isValid() || active.isEmpty()) {
 		return;
 	}
 
-	// `active` is in global logical pixels; this widget's origin is the
-	// virtual desktop's top-left corner.
-	const QPoint origin = geometry().topLeft();
+	// `active` is in global logical pixels; `origin` is this
+	// window's top-left corner in the same space.
 	const QRect local = active.translated(-origin);
 
 	painter.fillRect(local, QColor(90, 150, 255, 45));
@@ -591,10 +717,13 @@ void SnipPicker::paintEvent(QPaintEvent *)
 
 void SnipPicker::mousePressEvent(QMouseEvent *event)
 {
-	if (event->button() != Qt::LeftButton) {
-		return;
+	if (event->button() == Qt::LeftButton) {
+		HandleMousePress(event->globalPosition().toPoint());
 	}
-	const QPoint global = event->globalPosition().toPoint();
+}
+
+void SnipPicker::HandleMousePress(const QPoint &global)
+{
 
 	if (mode == SnipSelection::Mode::Region) {
 		dragging = true;
@@ -608,6 +737,7 @@ void SnipPicker::mousePressEvent(QMouseEvent *event)
 	}
 	UpdateToolbar();
 	update();
+	RefreshOverlays();
 	if (mode != SnipSelection::Mode::Region) {
 		MaybeInstantStart();
 	}
@@ -615,11 +745,16 @@ void SnipPicker::mousePressEvent(QMouseEvent *event)
 
 void SnipPicker::mouseMoveEvent(QMouseEvent *event)
 {
-	const QPoint global = event->globalPosition().toPoint();
+	HandleMouseMove(event->globalPosition().toPoint());
+}
+
+void SnipPicker::HandleMouseMove(const QPoint &global)
+{
 	if (mode == SnipSelection::Mode::Region) {
 		if (dragging) {
 			dragCurrent = global;
 			update();
+			RefreshOverlays();
 		}
 	} else if (mode == SnipSelection::Mode::Window) {
 		UpdateHoverWindow(global);
@@ -628,6 +763,7 @@ void SnipPicker::mouseMoveEvent(QMouseEvent *event)
 			if (fullScreenRect != screen->geometry()) {
 				fullScreenRect = screen->geometry();
 				update();
+				RefreshOverlays();
 			}
 		}
 	}
@@ -635,11 +771,18 @@ void SnipPicker::mouseMoveEvent(QMouseEvent *event)
 
 void SnipPicker::mouseReleaseEvent(QMouseEvent *event)
 {
-	if (mode != SnipSelection::Mode::Region || event->button() != Qt::LeftButton || !dragging) {
+	if (event->button() == Qt::LeftButton) {
+		HandleMouseRelease(event->globalPosition().toPoint());
+	}
+}
+
+void SnipPicker::HandleMouseRelease(const QPoint &globalPos)
+{
+	if (mode != SnipSelection::Mode::Region || !dragging) {
 		return;
 	}
 	dragging = false;
-	dragCurrent = event->globalPosition().toPoint();
+	dragCurrent = globalPos;
 	regionRect = QRect(dragStart, dragCurrent).normalized();
 	if (regionRect.width() < kMinRegionSize || regionRect.height() < kMinRegionSize) {
 		regionRect = {};
@@ -648,6 +791,7 @@ void SnipPicker::mouseReleaseEvent(QMouseEvent *event)
 	}
 	UpdateToolbar();
 	update();
+	RefreshOverlays();
 	if (!regionRect.isEmpty()) {
 		MaybeInstantStart();
 	}
@@ -655,13 +799,17 @@ void SnipPicker::mouseReleaseEvent(QMouseEvent *event)
 
 void SnipPicker::mouseDoubleClickEvent(QMouseEvent *event)
 {
-	if (event->button() != Qt::LeftButton) {
-		return;
+	if (event->button() == Qt::LeftButton) {
+		HandleMouseDoubleClick(event->globalPosition().toPoint());
 	}
+}
+
+void SnipPicker::HandleMouseDoubleClick(const QPoint &globalPos)
+{
 	// Note: the second press of the double-click already started a
 	// new drag, so check the stored rect itself here.
 	if (mode == SnipSelection::Mode::Region && regionRect.width() >= kMinRegionSize &&
-	    regionRect.height() >= kMinRegionSize && regionRect.contains(event->globalPosition().toPoint())) {
+	    regionRect.height() >= kMinRegionSize && regionRect.contains(globalPos)) {
 		StartRecording();
 	} else if (mode != SnipSelection::Mode::Region) {
 		StartRecording();
@@ -723,6 +871,19 @@ void SnipPicker::UpdateHoverWindow(const QPoint &globalPos)
 		hasHoverWindow = false;
 	}
 	update();
+#elif defined(__APPLE__)
+	// CGWindowList bounds are already in Qt's logical (point) space,
+	// front-to-back: the first window containing the point is topmost.
+	hasHoverWindow = false;
+	for (const snip_mac::WindowInfo &window : snip_mac::OnScreenWindows(snip_mac::WindowIdForWidget(this))) {
+		if (window.logicalRect.contains(globalPos)) {
+			hoverWindowRect = window.logicalRect;
+			hasHoverWindow = true;
+			break;
+		}
+	}
+	update();
+	RefreshOverlays();
 #else
 	(void)globalPos;
 #endif
@@ -760,6 +921,34 @@ void SnipPicker::SelectWindowAt(const QPoint &globalPos)
 	selectedWindowRect = PhysicalToLogicalRect(selectedWindowPhysicalRect, screen, monitor);
 	hasSelectedWindow = true;
 	hasHoverWindow = false;
+#elif defined(__APPLE__)
+	for (const snip_mac::WindowInfo &window : snip_mac::OnScreenWindows(snip_mac::WindowIdForWidget(this))) {
+		if (!window.logicalRect.contains(globalPos)) {
+			continue;
+		}
+		selectedWindowValue = window.ownerName.isEmpty() ? window.title
+								 : window.ownerName + QStringLiteral(" - ") + window.title;
+		if (selectedWindowValue.isEmpty()) {
+			selectedWindowValue = QStringLiteral("window %1").arg(window.windowId);
+		}
+		selectedWindowHandle = (void *)(uintptr_t)window.windowId;
+		selectedWindowPid = window.pid;
+		selectedWindowRect = window.logicalRect;
+		// Physical size (what SCK will produce) via the display map.
+		selectedWindowPhysicalRect = selectedWindowRect;
+		if (QScreen *screen = QGuiApplication::screenAt(globalPos)) {
+			snip_mac::DisplayInfo display;
+			if (snip_mac::DisplayForScreen(screen, display)) {
+				const snip::Rect physical = snip::MapRect(ToSnipRect(selectedWindowRect),
+									  ToSnipRect(screen->geometry()),
+									  ToSnipRect(display.physicalRect));
+				selectedWindowPhysicalRect = QRect(physical.x, physical.y, physical.width, physical.height);
+			}
+		}
+		hasSelectedWindow = true;
+		hasHoverWindow = false;
+		break;
+	}
 #else
 	(void)globalPos;
 #endif
@@ -777,6 +966,10 @@ bool SnipPicker::BuildSelection(SnipSelection &selection) const
 		selection.rect = ToSnipRect(selectedWindowPhysicalRect);
 		selection.logicalRect = ToSnipRect(selectedWindowRect);
 		selection.windowValue = selectedWindowValue.toUtf8().constData();
+#ifdef __APPLE__
+		selection.windowId = (uint32_t)(uintptr_t)selectedWindowHandle;
+		return selection.windowId != 0;
+#endif
 #ifdef _WIN32
 		const std::vector<MonitorEntry> monitors = AllMonitors();
 		const RECT rect = {selectedWindowPhysicalRect.left(), selectedWindowPhysicalRect.top(),
@@ -819,6 +1012,16 @@ bool SnipPicker::BuildSelection(SnipSelection &selection) const
 	selection.monitorId = monitor->deviceId;
 	selection.rect = snip::Intersect(
 		snip::MapRect(ToSnipRect(logical), ToSnipRect(screen->geometry()), monitorPhysical), monitorPhysical);
+#elif defined(__APPLE__)
+	snip_mac::DisplayInfo display;
+	if (!snip_mac::DisplayForScreen(screen, display) || display.uuid.isEmpty()) {
+		return false;
+	}
+	selection.monitorRect = ToSnipRect(display.physicalRect);
+	selection.monitorId = display.uuid.toStdString();
+	selection.rect = snip::Intersect(snip::MapRect(ToSnipRect(logical), ToSnipRect(screen->geometry()),
+						       ToSnipRect(display.physicalRect)),
+					 selection.monitorRect);
 #else
 	selection.rect = ToSnipRect(logical);
 	selection.monitorRect = selection.rect;

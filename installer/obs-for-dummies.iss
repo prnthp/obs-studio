@@ -8,7 +8,7 @@
 ; Build:  ISCC.exe obs-for-dummies.iss   (payload paths are relative)
 
 #define AppName "OBS for Dummies"
-#define AppVersion "1.2.0"
+#define AppVersion "1.3.0"
 #define Rundir "..\build_vs2026\rundir\RelWithDebInfo"
 ; MSVC runtime, deployed app-local. Path is specific to the build
 ; machine's Visual Studio 2022 install; adjust if ISCC complains.

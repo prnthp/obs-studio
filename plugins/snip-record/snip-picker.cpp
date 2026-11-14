@@ -370,17 +370,23 @@ SnipPicker::SnipPicker(SnipRecorder *recorder_, QWidget *parent) : QWidget(paren
 
 	auto *exportLabel = new QLabel(obs_module_text("SnipRecord.Picker.Export"), toolbar);
 	exportLabel->setStyleSheet("color: #ddd; padding: 2px 6px;");
-	exportCombo = new QComboBox(toolbar);
-	exportCombo->setFocusPolicy(Qt::NoFocus);
-	exportCombo->addItem(obs_module_text("SnipRecord.Picker.Export.None"));
-	exportCombo->addItem(obs_module_text("SnipRecord.Picker.Export.Gif"));
-	exportCombo->addItem(obs_module_text("SnipRecord.Picker.Export.WebP"));
-	exportCombo->setCurrentIndex(1); // GIF by default; a saved setting may override
+	auto makeExportCheck = [this](const char *textKey, bool checkedByDefault) {
+		auto *check = new QCheckBox(obs_module_text(textKey), toolbar);
+		check->setChecked(checkedByDefault);
+		check->setFocusPolicy(Qt::NoFocus);
+		check->setStyleSheet("QCheckBox { color: #ddd; padding: 2px 6px; }");
+		return check;
+	};
+	exportGifCheck = makeExportCheck("SnipRecord.Picker.Export.Gif", true); // GIF on for new installs
+	exportWebPCheck = makeExportCheck("SnipRecord.Picker.Export.WebP", false);
+	exportMp4Check = makeExportCheck("SnipRecord.Picker.Export.Mp4", false);
 
 	auto *exportRow = new QHBoxLayout;
 	exportRow->setContentsMargins(6, 0, 6, 0);
 	exportRow->addWidget(exportLabel);
-	exportRow->addWidget(exportCombo);
+	exportRow->addWidget(exportGifCheck);
+	exportRow->addWidget(exportWebPCheck);
+	exportRow->addWidget(exportMp4Check);
 	exportRow->addStretch();
 
 	auto *toolbarLayout = new QVBoxLayout(toolbar);
@@ -415,7 +421,9 @@ SnipPicker::SnipPicker(SnipRecorder *recorder_, QWidget *parent) : QWidget(paren
 		obs_frontend_save();
 	});
 	connect(postActionCombo, &QComboBox::currentIndexChanged, this, [](int) { obs_frontend_save(); });
-	connect(exportCombo, &QComboBox::currentIndexChanged, this, [](int) { obs_frontend_save(); });
+	connect(exportGifCheck, &QCheckBox::toggled, this, [](bool) { obs_frontend_save(); });
+	connect(exportWebPCheck, &QCheckBox::toggled, this, [](bool) { obs_frontend_save(); });
+	connect(exportMp4Check, &QCheckBox::toggled, this, [](bool) { obs_frontend_save(); });
 
 	outline = new SnipOutline(this);
 
@@ -485,15 +493,47 @@ void SnipPicker::SetCaptureOptions(bool desktopAudio, bool micAudio, bool cursor
 	recorder->SetCaptureCursor(cursor);
 }
 
-int SnipPicker::ExportFormat() const
+bool SnipPicker::ExportGif() const
 {
-	return exportCombo->currentIndex();
+	return exportGifCheck->isChecked();
 }
 
-void SnipPicker::SetExportFormat(int format)
+bool SnipPicker::ExportWebP() const
 {
-	const QSignalBlocker blocker(exportCombo);
-	exportCombo->setCurrentIndex(std::clamp(format, 0, exportCombo->count() - 1));
+	return exportWebPCheck->isChecked();
+}
+
+bool SnipPicker::ExportMp4() const
+{
+	return exportMp4Check->isChecked();
+}
+
+void SnipPicker::SetExportOptions(bool gif, bool webp, bool mp4)
+{
+	{
+		const QSignalBlocker blocker(exportGifCheck);
+		exportGifCheck->setChecked(gif);
+	}
+	{
+		const QSignalBlocker blocker(exportWebPCheck);
+		exportWebPCheck->setChecked(webp);
+	}
+	{
+		const QSignalBlocker blocker(exportMp4Check);
+		exportMp4Check->setChecked(mp4);
+	}
+}
+
+void SnipPicker::ShowStartFailure(const QString &reason)
+{
+	startError = reason;
+	recordingBlocked = obs_frontend_recording_active();
+	UpdateToolbar();
+	if (!isVisible()) {
+		show();
+	}
+	raise();
+	activateWindow();
 }
 
 void SnipPicker::MaybeInstantStart()
@@ -611,6 +651,7 @@ void SnipPicker::hideEvent(QHideEvent *event)
 
 void SnipPicker::SetMode(SnipSelection::Mode newMode)
 {
+	startError.clear();
 	mode = newMode;
 	regionButton->setChecked(mode == SnipSelection::Mode::Region);
 	windowButton->setChecked(mode == SnipSelection::Mode::Window);
@@ -647,8 +688,12 @@ void SnipPicker::UpdateToolbar()
 		hintKey = "SnipRecord.Picker.Hint.FullScreen";
 	}
 
-	hintLabel->setText(recordingBlocked ? obs_module_text("SnipRecord.Picker.AlreadyRecording")
-					    : obs_module_text(hintKey));
+	if (!startError.isEmpty()) {
+		hintLabel->setText(QString(obs_module_text("SnipRecord.Picker.StartFailed")).arg(startError));
+	} else {
+		hintLabel->setText(recordingBlocked ? obs_module_text("SnipRecord.Picker.AlreadyRecording")
+						    : obs_module_text(hintKey));
+	}
 
 	recordButton->setEnabled(CanRecord());
 }
@@ -1050,19 +1095,28 @@ void SnipPicker::HideOutline()
 void SnipPicker::StartRecording()
 {
 	if (!CanRecord()) {
+		if (recordingBlocked) {
+			ShowStartFailure(QStringLiteral("OBS is already recording."));
+		}
 		return;
 	}
 
 	SnipSelection selection;
 	if (!BuildSelection(selection)) {
+		ShowStartFailure(QStringLiteral("The selected area is not valid. Try selecting it again."));
 		return;
 	}
 	lastSelection = selection;
 	hasLastSelection = true;
+	startError.clear();
 
 	hide();
 	// Give the overlay a frame to disappear before capture starts, so
 	// it is not visible in the first recorded frames. The outline is
 	// shown later, from the module's RECORDING_STARTED handler.
-	QTimer::singleShot(150, this, [this, selection] { recorder->StartRecording(selection); });
+	QTimer::singleShot(150, this, [this, selection] {
+		if (!recorder->StartRecording(selection)) {
+			ShowStartFailure(QString::fromStdString(recorder->LastError()));
+		}
+	});
 }

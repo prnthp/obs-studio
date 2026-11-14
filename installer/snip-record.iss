@@ -7,7 +7,7 @@
 ; Build:  ISCC.exe snip-record.iss      (payload paths are relative)
 
 #define AppName "Snip Record for OBS"
-#define AppVersion "1.2.0"
+#define AppVersion "1.3.0"
 #define Rundir "..\build_vs2026\rundir\RelWithDebInfo"
 
 [Setup]

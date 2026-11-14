@@ -21,15 +21,31 @@ system Videos folder. All of these remain changeable in OBS Settings.
 The picker also has **Desktop audio**, **Microphone**, and **Mouse
 pointer** checkboxes. Unchecking audio detaches OBS's global audio
 devices (desktop channels 1-2, mic channels 3-6) for that snip only;
-they are restored when the recording stops.
+they are restored when the recording stops. If a checked audio
+family has no global device at all (it was never added in OBS
+Settings), the plugin first adds the default device — "Desktop
+Audio" on channel 1, "Mic/Aux" on channel 3 — and leaves it
+installed for future recordings.
 
-**Also export** (picker, GIF by default) converts each finished MP4
-in the background - the MP4 is always kept as the master. GIF uses
-the FFmpeg libraries OBS ships (decode, palette generation, encode;
-capped at 960 px wide / 15 fps), or gifski when found on PATH. WebP
-goes through a user-installed ffmpeg with libwebp, since OBS's
-FFmpeg build has no WebP encoder. The launcher window shows export
-progress/results.
+**Also export** (picker checkboxes: GIF, WebP, MP4; GIF checked by
+default, any combination allowed) converts the finished recording
+in the background, one format after another — the original
+recording is always kept as the master. GIF uses the FFmpeg
+libraries OBS ships (decode, palette generation, encode; capped at
+960 px wide / 15 fps), or gifski when found on PATH. WebP goes
+through a user-installed ffmpeg with libwebp, since OBS's FFmpeg
+build has no WebP encoder. MP4 re-encodes in-process to H.264 +
+AAC at the recording's own resolution and frame rate (CRF 23);
+when the recording already is an MP4, the copy is named
+`<name> (re-encoded).mp4` so the master is never overwritten. The
+launcher window shows export progress/results.
+
+If a recording fails to start (no valid selection, capture source
+unavailable, OBS already recording, or the frontend rejecting the
+start, e.g. a bad recording folder), the picker reappears with the
+reason in its hint line instead of silently vanishing, and the
+canvas size, scene, and audio routing are put back the way they
+were.
 
 ## Usage
 

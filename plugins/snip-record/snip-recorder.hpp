@@ -3,6 +3,9 @@
 #include <obs.hpp>
 
 #include <atomic>
+#include <cstdint>
+#include <functional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -24,12 +27,29 @@ public:
 
 	bool IsActive() const { return active; }
 
+	// Human-readable reason the last StartRecording() call failed
+	// (empty after a successful start request). Set on every
+	// failure path so the caller can show it instead of failing
+	// silently.
+	const std::string &LastError() const { return lastError; }
+
+	// Called (on the UI thread) when a start that was already
+	// handed to the frontend turns out never to have begun
+	// recording (bad output path, encoder failure, ...), after
+	// the recorder has rolled its own state back.
+	void SetStartFailureCallback(std::function<void(const std::string &)> callback)
+	{
+		startFailureCallback = std::move(callback);
+	}
+
 	// Window-mode starts wait for the capture source to hook its
 	// window before recording begins. Cancels such a pending start.
 	void CancelPendingStart();
 	// Called (on the UI thread) when the capture hooked, or when the
 	// wait timed out and recording should start anyway.
 	void BeginRecording();
+	// Called (on the UI thread) by the start-verification poller.
+	void VerifyRecordingStarted(uint64_t generation);
 
 	// Optional: resize the OBS canvas (base + output) to the picked
 	// area for the duration of the snip, then restore it. On by
@@ -73,6 +93,27 @@ private:
 	void DisconnectPendingHook();
 	void GateAudioChannels();
 	void RestoreAudioChannels();
+	// Creates the default global desktop/mic sources on channels
+	// 1/3 when the picker wants that audio but the channel is
+	// empty (user never added a global audio device). Sources
+	// added here stay installed after the snip.
+	void EnsureGlobalAudio();
+	void EnsureAudioChannel(int channel, const char *sourceId, const char *fallbackId, const char *nameKey);
+	// Records `reason` in LastError, logs it, and rolls back any
+	// side effects StartRecording already made. Returns false.
+	bool FailStart(const std::string &reason);
+	// Undoes a start (canvas, gated audio, scene, active flag)
+	// without expecting a RECORDING_STOPPED event.
+	void RollbackFailedStart(const std::string &reason);
+	// obs_frontend_recording_start() is fire-and-forget: the
+	// frontend can reject it without telling us. Poll briefly
+	// and roll back (via the start-failure callback) if
+	// recording never becomes active.
+	void ScheduleStartVerification();
+
+	std::string lastError;
+	std::function<void(const std::string &)> startFailureCallback;
+	std::atomic<uint64_t> startGeneration{0};
 
 	bool recordDesktopAudio = true;
 	bool recordMicAudio = true;
@@ -81,7 +122,7 @@ private:
 	// when it stops. Strong refs, released on restore.
 	std::vector<std::pair<int, obs_source_t *>> gatedAudio;
 
-	bool active = false;
+	std::atomic<bool> active{false};
 	std::atomic<bool> pendingStart{false};
 	OBSWeakSourceAutoRelease pendingCapture;
 	bool matchCanvas = true;

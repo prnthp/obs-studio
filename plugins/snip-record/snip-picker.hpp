@@ -53,10 +53,17 @@ public:
 	bool CaptureCursor() const;
 	void SetCaptureOptions(bool desktopAudio, bool micAudio, bool cursor);
 
-	// Optional animated export converted from the MP4 after each
-	// snip: 0 = none, 1 = GIF, 2 = WebP (external ffmpeg required).
-	int ExportFormat() const;
-	void SetExportFormat(int format);
+	// Optional extra exports converted from the recording after
+	// each snip. Any combination may be on at once. GIF is on by
+	// default for new installs.
+	bool ExportGif() const;
+	bool ExportWebP() const;
+	bool ExportMp4() const;
+	void SetExportOptions(bool gif, bool webp, bool mp4);
+
+	// Re-opens the picker showing why a recording start failed,
+	// instead of the picker just vanishing with nothing recorded.
+	void ShowStartFailure(const QString &reason);
 
 protected:
 	void showEvent(QShowEvent *event) override;
@@ -116,7 +123,9 @@ private:
 	QCheckBox *desktopAudioCheck = nullptr;
 	QCheckBox *micAudioCheck = nullptr;
 	QCheckBox *cursorCheck = nullptr;
-	QComboBox *exportCombo = nullptr;
+	QCheckBox *exportGifCheck = nullptr;
+	QCheckBox *exportWebPCheck = nullptr;
+	QCheckBox *exportMp4Check = nullptr;
 	QComboBox *postActionCombo = nullptr;
 	QLabel *hintLabel = nullptr;
 	SnipOutline *outline = nullptr;
@@ -151,4 +160,8 @@ private:
 	QRect fullScreenRect;
 
 	bool recordingBlocked = false;
+
+	// Why the last recording start failed; shown in the hint
+	// label until the user changes mode or tries again.
+	QString startError;
 };

@@ -262,9 +262,43 @@ void SnipRecorder::RestoreCanvasIfPending()
 	}
 }
 
+bool SnipRecorder::FailStart(const std::string &reason)
+{
+	lastError = reason;
+	blog(LOG_ERROR, "[snip-record] Not starting: %s", reason.c_str());
+	RollbackFailedStart(reason);
+	return false;
+}
+
+void SnipRecorder::RollbackFailedStart(const std::string &reason)
+{
+	(void)reason;
+	pendingStart.exchange(false);
+	DisconnectPendingHook();
+	RestoreAudioChannels();
+
+	OBSSourceAutoRelease snip = snipScene ? obs_weak_source_get_source(snipScene) : nullptr;
+	OBSSourceAutoRelease previous = previousScene ? obs_weak_source_get_source(previousScene) : nullptr;
+	snipScene = nullptr;
+	previousScene = nullptr;
+
+	if (active && snip && previous) {
+		OBSSourceAutoRelease currentScene = obs_frontend_get_current_scene();
+		if (currentScene && currentScene.Get() == snip.Get()) {
+			obs_frontend_set_current_scene(previous);
+		}
+	}
+	active = false;
+
+	RestoreCanvasIfPending();
+}
+
 bool SnipRecorder::StartRecording(const SnipSelection &selection)
 {
+	lastError.clear();
+
 	if (obs_frontend_recording_active()) {
+		lastError = "OBS is already recording. Stop the current recording first.";
 		blog(LOG_WARNING, "[snip-record] Not starting: OBS is already recording");
 		return false;
 	}
@@ -272,15 +306,18 @@ bool SnipRecorder::StartRecording(const SnipSelection &selection)
 	if (selection.mode != SnipSelection::Mode::Window &&
 	    (selection.monitorId.empty() ||
 	     !snip::IsUsable({selection.rect.x, selection.rect.y, selection.rect.width, selection.rect.height}))) {
+		lastError = "The selected area is not valid. Try selecting it again.";
 		blog(LOG_ERROR, "[snip-record] Not starting: invalid selection");
 		return false;
 	}
 	if (selection.mode == SnipSelection::Mode::Window && selection.windowValue.empty()) {
+		lastError = "No window is selected. Click a window first.";
 		blog(LOG_ERROR, "[snip-record] Not starting: no window selected");
 		return false;
 	}
 #ifdef __APPLE__
 	if (selection.mode == SnipSelection::Mode::Window && selection.windowId == 0) {
+		lastError = "No window is selected. Click a window first.";
 		blog(LOG_ERROR, "[snip-record] Not starting: no window selected");
 		return false;
 	}
@@ -288,11 +325,15 @@ bool SnipRecorder::StartRecording(const SnipSelection &selection)
 
 	OBSSourceAutoRelease sceneSource = FindOrCreateScene();
 	if (!sceneSource) {
+		lastError = "Could not create the Snip Record scene.";
+		blog(LOG_ERROR, "[snip-record] Not starting: scene creation failed");
 		return false;
 	}
 
 	obs_scene_t *scene = obs_scene_from_source(sceneSource);
 	if (!scene) {
+		lastError = "Could not create the Snip Record scene.";
+		blog(LOG_ERROR, "[snip-record] Not starting: scene is not a scene source");
 		return false;
 	}
 
@@ -313,12 +354,13 @@ bool SnipRecorder::StartRecording(const SnipSelection &selection)
 
 	OBSSourceAutoRelease capture = CreateCaptureSource(selection);
 	if (!capture) {
-		return false;
+		return FailStart("Could not create the capture source. Check that the capture plugin is loaded and "
+				 "that no other source is using the Snip Capture name.");
 	}
 
 	obs_sceneitem_t *item = obs_scene_add(scene, capture);
 	if (!item) {
-		return false;
+		return FailStart("Could not add the capture source to the Snip Record scene.");
 	}
 
 	if (selection.mode == SnipSelection::Mode::Region) {
@@ -329,8 +371,10 @@ bool SnipRecorder::StartRecording(const SnipSelection &selection)
 	FitItemToCanvas(item);
 
 	obs_frontend_set_current_scene(sceneSource);
+	EnsureGlobalAudio();
 	GateAudioChannels();
 	active = true;
+	startGeneration.fetch_add(1);
 	blog(LOG_INFO, "[snip-record] Starting recording (mode=%d, %dx%d)", int(selection.mode), selection.rect.width,
 	     selection.rect.height);
 	if (selection.mode == SnipSelection::Mode::Window) {
@@ -344,11 +388,61 @@ bool SnipRecorder::StartRecording(const SnipSelection &selection)
 		// The SCK source has no "hooked" signal; it delivers
 		// frames as soon as its stream starts.
 		obs_frontend_recording_start();
+		ScheduleStartVerification();
 #endif
 	} else {
 		obs_frontend_recording_start();
+		ScheduleStartVerification();
 	}
 	return true;
+}
+
+static void VerifyRecordingTask(void *param)
+{
+	auto *pair = static_cast<std::pair<SnipRecorder *, uint64_t> *>(param);
+	pair->first->VerifyRecordingStarted(pair->second);
+	delete pair;
+}
+
+void SnipRecorder::ScheduleStartVerification()
+{
+	const uint64_t generation = startGeneration.load();
+	std::thread(
+		[this, generation] {
+			// The frontend start is queued and encoder
+			// creation can take a moment; poll for up to
+			// ~4 seconds before declaring the start dead.
+			for (int i = 0; i < 16; i++) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(250));
+				if (startGeneration.load() != generation || !active) {
+					return;
+				}
+				if (obs_frontend_recording_active()) {
+					return;
+				}
+			}
+			if (startGeneration.load() != generation || !active || obs_frontend_recording_active()) {
+				return;
+			}
+			auto *pair = new std::pair<SnipRecorder *, uint64_t>(this, generation);
+			obs_queue_task(OBS_TASK_UI, VerifyRecordingTask, pair, false);
+		})
+		.detach();
+}
+
+void SnipRecorder::VerifyRecordingStarted(uint64_t generation)
+{
+	if (startGeneration.load() != generation || !active || obs_frontend_recording_active()) {
+		return;
+	}
+	const std::string reason = "Recording did not start. Check the recording folder and encoder in OBS "
+				   "Settings, then try again.";
+	blog(LOG_ERROR, "[snip-record] %s", reason.c_str());
+	lastError = reason;
+	RollbackFailedStart(reason);
+	if (startFailureCallback) {
+		startFailureCallback(reason);
+	}
 }
 
 static void BeginRecordingTask(void *param)
@@ -403,6 +497,7 @@ void SnipRecorder::BeginRecording()
 	}
 	blog(LOG_INFO, "[snip-record] Window capture ready; recording now");
 	obs_frontend_recording_start();
+	ScheduleStartVerification();
 }
 
 void SnipRecorder::CancelPendingStart()
@@ -410,6 +505,84 @@ void SnipRecorder::CancelPendingStart()
 	if (pendingStart.exchange(false)) {
 		DisconnectPendingHook();
 		blog(LOG_INFO, "[snip-record] Pending window recording start cancelled");
+		// A cancelled pending start never produces a
+		// RECORDING_STOPPED event, so undo its side effects
+		// (switched scene, resized canvas, gated audio) here.
+		if (active && !obs_frontend_recording_active()) {
+			RollbackFailedStart("Pending start cancelled");
+		}
+	}
+}
+
+void SnipRecorder::EnsureAudioChannel(int channel, const char *sourceId, const char *fallbackId, const char *nameKey)
+{
+	OBSSourceAutoRelease existing = obs_get_output_source(channel);
+	if (existing) {
+		return;
+	}
+
+	// First free name: "Desktop Audio", then "Desktop Audio 2", ...
+	std::string name;
+	for (int i = 1; i < 100; i++) {
+		std::string candidate = i == 1 ? obs_module_text(nameKey)
+					       : std::string(obs_module_text(nameKey)) + " " + std::to_string(i);
+		OBSSourceAutoRelease taken = obs_get_source_by_name(candidate.c_str());
+		if (!taken) {
+			name = candidate;
+			break;
+		}
+	}
+	if (name.empty()) {
+		blog(LOG_WARNING, "[snip-record] No free name for global audio source on channel %d", channel);
+		return;
+	}
+
+	OBSDataAutoRelease settings = obs_data_create();
+	// Device-based captures pick the OS default device this way;
+	// stream-based captures (macOS SCK audio) use their defaults.
+	if (std::string(sourceId) != "sck_audio_capture") {
+		obs_data_set_string(settings, "device_id", "default");
+	}
+	OBSSourceAutoRelease source = obs_source_create(sourceId, name.c_str(), settings, nullptr);
+	if (!source && fallbackId) {
+		source = obs_source_create(fallbackId, name.c_str(), settings, nullptr);
+	}
+	if (!source) {
+		blog(LOG_WARNING, "[snip-record] Could not create global audio source '%s' (%s); recording without it",
+		     name.c_str(), sourceId);
+		return;
+	}
+
+	obs_set_output_source(channel, source);
+	blog(LOG_INFO, "[snip-record] Added missing global audio source '%s' on channel %d", name.c_str(), channel);
+}
+
+void SnipRecorder::EnsureGlobalAudio()
+{
+	// Same platform source ids the frontend uses for its global
+	// audio devices (OBSApp::OutputAudioSource/InputAudioSource).
+#ifdef _WIN32
+	const char *outputId = "wasapi_output_capture";
+	const char *inputId = "wasapi_input_capture";
+#elif defined(__APPLE__)
+	const char *outputId = "coreaudio_output_capture";
+	const char *inputId = "coreaudio_input_capture";
+#else
+	const char *outputId = "pulse_output_capture";
+	const char *inputId = "pulse_input_capture";
+#endif
+
+	if (recordDesktopAudio) {
+#ifdef __APPLE__
+		// CoreAudio desktop capture is deprecated on macOS 13+;
+		// the ScreenCaptureKit audio source is its replacement.
+		EnsureAudioChannel(1, "sck_audio_capture", outputId, "SnipRecord.Audio.Desktop");
+#else
+		EnsureAudioChannel(1, outputId, nullptr, "SnipRecord.Audio.Desktop");
+#endif
+	}
+	if (recordMicAudio) {
+		EnsureAudioChannel(3, inputId, nullptr, "SnipRecord.Audio.Mic");
 	}
 }
 
